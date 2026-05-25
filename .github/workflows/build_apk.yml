@@ -47,6 +47,14 @@ jobs:
         pip install --upgrade pip setuptools wheel
         pip install buildozer cython
 
+    - name: Setup Android SDK paths
+      run: |
+        echo "ANDROID_HOME=$ANDROID_HOME"
+        echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+        ls -la $ANDROID_HOME/build-tools/ 2>/dev/null || echo "No build-tools in ANDROID_HOME"
+        ls -la $ANDROID_HOME/platforms/ 2>/dev/null || echo "No platforms in ANDROID_HOME"
+        which aidl 2>/dev/null || echo "aidl not in PATH"
+
     - name: Cache buildozer global
       uses: actions/cache@v4
       with:
@@ -80,6 +88,8 @@ jobs:
       timeout-minutes: 90
       env:
         BUILDOZER_WARN_ON_ROOT: 0
+        ANDROIDSDK: /usr/local/lib/android/sdk
+        ANDROIDNDK: /usr/local/lib/android/sdk/ndk/27.3.13750724
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
