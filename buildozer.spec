@@ -60,7 +60,7 @@ android.permissions = INTERNET, VIBRATE
 # (bool) If True, then skip trying to update the Android SDK
 # This can be useful to avoid excess Internet downloads or save time
 # if an update is due and you just want to test/build your package
-#android.skip_update = False
+android.skip_update = True
 
 # (bool) If True, then automatically accept SDK license
 # agreements. This is intended for automated build environments.
@@ -143,6 +143,9 @@ android.accept_sdk_license = True
 
 # (str) The Android arch to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
 android.arch = arm64-v8a
+
+# (int) Log level (0 = error only, 1 = info, 2 = debug)
+log_level = 2
 
 #
 # Python for android (p4a) specific
