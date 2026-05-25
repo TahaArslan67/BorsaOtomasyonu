@@ -64,7 +64,7 @@ android.permissions = INTERNET, VIBRATE
 
 # (bool) If True, then automatically accept SDK license
 # agreements. This is intended for automated build environments.
-#android.accept_sdk_license = False
+android.accept_sdk_license = True
 
 # (str) Android entry point, default is ok for Kivy-based app
 #android.entrypoint = org.kivy.android.PythonActivity
