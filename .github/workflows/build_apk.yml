@@ -9,6 +9,7 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  DEBIAN_FRONTEND: noninteractive
 
 jobs:
   build:
@@ -24,36 +25,15 @@ jobs:
 
     - name: Install system dependencies
       run: |
-        sudo dpkg --add-architecture i386
         sudo apt-get update -qq
         sudo apt-get install -y --no-install-recommends \
-          git \
-          zip \
-          unzip \
-          openjdk-17-jdk \
-          python3-pip \
-          autoconf \
-          libtool \
-          pkg-config \
-          zlib1g-dev \
-          libncurses-dev \
-          libtinfo6 \
-          cmake \
-          libffi-dev \
-          libssl-dev \
-          automake \
-          libltdl-dev \
-          python3-virtualenv
+          git zip unzip openjdk-17-jdk \
+          python3-pip autoconf libtool pkg-config \
+          zlib1g-dev libncurses-dev libtinfo6 \
+          cmake libffi-dev libssl-dev automake \
+          libltdl-dev
         pip install --upgrade pip setuptools wheel
         pip install buildozer cython
-
-    - name: Setup Android SDK paths
-      run: |
-        echo "ANDROID_HOME=$ANDROID_HOME"
-        echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
-        ls -la $ANDROID_HOME/build-tools/ 2>/dev/null || echo "No build-tools in ANDROID_HOME"
-        ls -la $ANDROID_HOME/platforms/ 2>/dev/null || echo "No platforms in ANDROID_HOME"
-        which aidl 2>/dev/null || echo "aidl not in PATH"
 
     - name: Cache buildozer global
       uses: actions/cache@v4
@@ -74,16 +54,6 @@ jobs:
     - name: Build APK
       run: |
         echo "=== Starting Build ==="
-        echo "Python version: $(python --version)"
-        echo "Buildozer version: $(buildozer version)"
-        echo "Current dir: $(pwd)"
-        echo "Files in dir:"
-        ls -la
-        echo ""
-        echo "=== buildozer.spec exists? ==="
-        test -f buildozer.spec && echo "YES" || echo "NO"
-        echo ""
-        echo "=== Running buildozer ==="
         buildozer android debug
       timeout-minutes: 90
       env:
