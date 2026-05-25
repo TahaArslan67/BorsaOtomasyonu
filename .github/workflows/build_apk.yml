@@ -66,7 +66,18 @@ jobs:
 
     - name: Build APK
       run: |
-        buildozer android debug 2>&1 | tee buildozer.log
+        echo "=== Starting Build ==="
+        echo "Python version: $(python --version)"
+        echo "Buildozer version: $(buildozer version)"
+        echo "Current dir: $(pwd)"
+        echo "Files in dir:"
+        ls -la
+        echo ""
+        echo "=== buildozer.spec exists? ==="
+        test -f buildozer.spec && echo "YES" || echo "NO"
+        echo ""
+        echo "=== Running buildozer ==="
+        buildozer android debug
       timeout-minutes: 90
       env:
         BUILDOZER_WARN_ON_ROOT: 0
@@ -77,14 +88,6 @@ jobs:
       with:
         name: BorsaBot-APK
         path: bin/*.apk
-        if-no-files-found: warn
-
-    - name: Upload logs
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: buildozer-logs
-        path: buildozer.log
         if-no-files-found: warn
 
     - name: List bin directory
