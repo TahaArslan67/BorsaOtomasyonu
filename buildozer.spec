@@ -60,7 +60,11 @@ android.permissions = INTERNET, VIBRATE
 # (bool) If True, then skip trying to update the Android SDK
 # This can be useful to avoid excess Internet downloads or save time
 # if an update is due and you just want to test/build your package
-android.skip_update = False
+android.skip_update = True
+
+# Use GitHub runner's pre-installed Android SDK
+android.sdk_path = /usr/local/lib/android/sdk
+android.ndk_path = /usr/local/lib/android/sdk/ndk/27.3.13750724
 
 # (bool) If True, then automatically accept SDK license
 # agreements. This is intended for automated build environments.
