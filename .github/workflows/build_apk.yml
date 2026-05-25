@@ -35,6 +35,23 @@ jobs:
         pip install --upgrade pip setuptools wheel
         pip install buildozer cython
 
+    - name: Fix Android SDK for buildozer
+      run: |
+        echo "ANDROID_HOME=$ANDROID_HOME"
+        # Find sdkmanager
+        SDKMGR=$(find $ANDROID_HOME -name "sdkmanager" -type f 2>/dev/null | head -1)
+        echo "Found sdkmanager: $SDKMGR"
+        if [ -n "$SDKMGR" ]; then
+          mkdir -p $ANDROID_HOME/tools/bin
+          ln -sf $SDKMGR $ANDROID_HOME/tools/bin/sdkmanager
+          chmod +x $SDKMGR
+          echo "sdkmanager symlink created"
+          $ANDROID_HOME/tools/bin/sdkmanager --version || true
+        fi
+        # Find aidl
+        AIDL=$(find $ANDROID_HOME -name "aidl" -type f 2>/dev/null | head -1)
+        echo "Found aidl: $AIDL"
+
     - name: Cache buildozer global
       uses: actions/cache@v4
       with:
