@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GMSTR Real API Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #1e1e1e;
+            color: white;
+            padding: 20px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: #2d2d2d;
+            padding: 20px;
+            border-radius: 10px;
+        }
+        .price-display {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 20px 0;
+            padding: 15px;
+            background: #333;
+            border-radius: 5px;
+        }
+        .api-info {
+            font-size: 12px;
+            color: #ccc;
+            margin: 10px 0;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .error {
+            color: #ff6b6b;
+        }
+        .success {
+            color: #51cf66;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GMSTR Gerçek Fiyat Testi</h1>
+        
+        <div class="api-info">
+            <p>GMSTR (Garanti Metal Strateji) BIST hissesi</p>
+            <p>API Test Ediliyor...</p>
+        </div>
+        
+        <button onclick="testFinansHub()">FinansHub API</button>
+        <button onclick="testInvesting()">Investing.com API</button>
+        <button onclick="testYahoo()">Yahoo Finance API</button>
+        <button onclick="testBIST()">BIST API</button>
+        
+        <div id="result" class="price-display">
+            Fiyat yükleniyor...
+        </div>
+        
+        <div id="info" class="api-info"></div>
+    </div>
+
+    <script>
+        async function testFinansHub() {
+            const resultDiv = document.getElementById('result');
+            const infoDiv = document.getElementById('info');
+            
+            resultDiv.innerHTML = 'Yükleniyor...';
+            infoDiv.innerHTML = '';
+            
+            try {
+                // FinansHub API test
+                const response = await fetch('https://api.finanshub.com/api/stocks/GMSTR');
+                const data = await response.json();
+                
+                if (data.price) {
+                    resultDiv.innerHTML = `₺${data.price}`;
+                    resultDiv.className = 'price-display success';
+                    infoDiv.innerHTML = `Kaynak: FinansHub API<br>Zaman: ${new Date().toLocaleTimeString()}`;
+                } else {
+                    throw new Error('Fiyat bulunamadı');
+                }
+            } catch (error) {
+                resultDiv.innerHTML = 'Hata: API çalışmıyor';
+                resultDiv.className = 'price-display error';
+                infoDiv.innerHTML = `Hata: ${error.message}`;
+            }
+        }
+        
+        async function testInvesting() {
+            const resultDiv = document.getElementById('result');
+            const infoDiv = document.getElementById('info');
+            
+            resultDiv.innerHTML = 'Yükleniyor...';
+            infoDiv.innerHTML = '';
+            
+            try {
+                // Investing.com API test (CORS nedeniyle proxy kullan)
+                const response = await fetch('https://api.allorigins.win/raw?url=https://www.investing.com/equities/garanti-metal-stratej-hisaltar');
+                const html = await response.text();
+                
+                // HTML'den fiyatı çıkar
+                const priceMatch = html.match(/data-test="instrument-price-last".*?>([\d,.]+)</);
+                if (priceMatch) {
+                    const price = priceMatch[1].replace(',', '.');
+                    resultDiv.innerHTML = `₺${price}`;
+                    resultDiv.className = 'price-display success';
+                    infoDiv.innerHTML = `Kaynak: Investing.com<br>Zaman: ${new Date().toLocaleTimeString()}`;
+                } else {
+                    throw new Error('Fiyat bulunamadı');
+                }
+            } catch (error) {
+                resultDiv.innerHTML = 'Hata: Investing.com erişilemiyor';
+                resultDiv.className = 'price-display error';
+                infoDiv.innerHTML = `Hata: ${error.message}`;
+            }
+        }
+        
+        async function testYahoo() {
+            const resultDiv = document.getElementById('result');
+            const infoDiv = document.getElementById('info');
+            
+            resultDiv.innerHTML = 'Yükleniyor...';
+            infoDiv.innerHTML = '';
+            
+            try {
+                // Yahoo Finance API test
+                const response = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/GMSTR.IS');
+                const data = await response.json();
+                
+                if (data.chart.result && data.chart.result[0]) {
+                    const price = data.chart.result[0].meta.regularMarketPrice;
+                    resultDiv.innerHTML = `₺${price.toFixed(2)}`;
+                    resultDiv.className = 'price-display success';
+                    infoDiv.innerHTML = `Kaynak: Yahoo Finance<br>Zaman: ${new Date().toLocaleTimeString()}`;
+                } else {
+                    throw new Error('Fiyat bulunamadı');
+                }
+            } catch (error) {
+                resultDiv.innerHTML = 'Hata: Yahoo Finance erişilemiyor';
+                resultDiv.className = 'price-display error';
+                infoDiv.innerHTML = `Hata: ${error.message}`;
+            }
+        }
+        
+        async function testBIST() {
+            const resultDiv = document.getElementById('result');
+            const infoDiv = document.getElementById('info');
+            
+            resultDiv.innerHTML = 'Yükleniyor...';
+            infoDiv.innerHTML = '';
+            
+            try {
+                // BIST API test
+                const response = await fetch('https://www.borsaistanbul.com/v1/stocks/GMSTR');
+                const data = await response.json();
+                
+                if (data.price) {
+                    resultDiv.innerHTML = `₺${data.price}`;
+                    resultDiv.className = 'price-display success';
+                    infoDiv.innerHTML = `Kaynak: BIST<br>Zaman: ${new Date().toLocaleTimeString()}`;
+                } else {
+                    throw new Error('Fiyat bulunamadı');
+                }
+            } catch (error) {
+                resultDiv.innerHTML = 'Hata: BIST API erişilemiyor';
+                resultDiv.className = 'price-display error';
+                infoDiv.innerHTML = `Hata: ${error.message}`;
+            }
+        }
+        
+        // Otomatik test
+        window.onload = function() {
+            setTimeout(testYahoo, 1000); // Yahoo Finance ile başla
+        };
+    </script>
+</body>
+</html>

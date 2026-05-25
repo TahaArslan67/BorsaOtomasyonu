@@ -1,0 +1,104 @@
+{
+  "horizon": "10d",
+  "accuracy": 0.5248,
+  "auc_roc": 0.4957,
+  "precision": 0.5248,
+  "recall": 1.0,
+  "f1_score": 0.6883,
+  "confusion_matrix": [
+    [
+      0,
+      48
+    ],
+    [
+      0,
+      53
+    ]
+  ],
+  "best_confidence_threshold": 0.5,
+  "best_hc_accuracy": 0.5248,
+  "best_hc_coverage": 100.0,
+  "confidence_analysis": [
+    {
+      "threshold": 0.5,
+      "coverage_pct": 100.0,
+      "n_samples": 101,
+      "accuracy": 0.5247524752475248,
+      "precision": 0.5247524752475248,
+      "recall": 1.0,
+      "f1": 0.6883116883116883
+    },
+    {
+      "threshold": 0.55,
+      "coverage_pct": 100.0,
+      "n_samples": 101,
+      "accuracy": 0.5247524752475248,
+      "precision": 0.5247524752475248,
+      "recall": 1.0,
+      "f1": 0.6883116883116883
+    },
+    {
+      "threshold": 0.6,
+      "coverage_pct": 100.0,
+      "n_samples": 101,
+      "accuracy": 0.5247524752475248,
+      "precision": 0.5247524752475248,
+      "recall": 1.0,
+      "f1": 0.6883116883116883
+    },
+    {
+      "threshold": 0.65,
+      "coverage_pct": 100.0,
+      "n_samples": 101,
+      "accuracy": 0.5247524752475248,
+      "precision": 0.5247524752475248,
+      "recall": 1.0,
+      "f1": 0.6883116883116883
+    },
+    {
+      "threshold": 0.7,
+      "coverage_pct": 100.0,
+      "n_samples": 101,
+      "accuracy": 0.5247524752475248,
+      "precision": 0.5247524752475248,
+      "recall": 1.0,
+      "f1": 0.6883116883116883
+    },
+    {
+      "threshold": 0.75,
+      "coverage_pct": 100.0,
+      "n_samples": 101,
+      "accuracy": 0.5247524752475248,
+      "precision": 0.5247524752475248,
+      "recall": 1.0,
+      "f1": 0.6883116883116883
+    },
+    {
+      "threshold": 0.8,
+      "coverage_pct": 0.0,
+      "n_samples": 0,
+      "accuracy": NaN,
+      "precision": NaN,
+      "recall": NaN,
+      "f1": NaN
+    }
+  ],
+  "backtest_60": {
+    "total_return_pct": 38.16,
+    "n_trades": 1,
+    "sharpe": 1.456,
+    "max_drawdown_pct": -43.93
+  },
+  "backtest_65": {
+    "total_return_pct": 38.16,
+    "n_trades": 1,
+    "sharpe": 1.456,
+    "max_drawdown_pct": -43.93
+  },
+  "backtest_70": {
+    "total_return_pct": 38.16,
+    "n_trades": 1,
+    "sharpe": 1.456,
+    "max_drawdown_pct": -43.93
+  }
+}

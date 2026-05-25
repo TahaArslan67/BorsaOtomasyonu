@@ -1,0 +1,104 @@
+{
+  "horizon": "1d",
+  "accuracy": 0.495,
+  "auc_roc": 0.4945,
+  "precision": 0.495,
+  "recall": 1.0,
+  "f1_score": 0.6623,
+  "confusion_matrix": [
+    [
+      0,
+      51
+    ],
+    [
+      0,
+      50
+    ]
+  ],
+  "best_confidence_threshold": 0.5,
+  "best_hc_accuracy": 0.495,
+  "best_hc_coverage": 100.0,
+  "confidence_analysis": [
+    {
+      "threshold": 0.5,
+      "coverage_pct": 100.0,
+      "n_samples": 101,
+      "accuracy": 0.49504950495049505,
+      "precision": 0.49504950495049505,
+      "recall": 1.0,
+      "f1": 0.6622516556291391
+    },
+    {
+      "threshold": 0.55,
+      "coverage_pct": 100.0,
+      "n_samples": 101,
+      "accuracy": 0.49504950495049505,
+      "precision": 0.49504950495049505,
+      "recall": 1.0,
+      "f1": 0.6622516556291391
+    },
+    {
+      "threshold": 0.6,
+      "coverage_pct": 0.0,
+      "n_samples": 0,
+      "accuracy": NaN,
+      "precision": NaN,
+      "recall": NaN,
+      "f1": NaN
+    },
+    {
+      "threshold": 0.65,
+      "coverage_pct": 0.0,
+      "n_samples": 0,
+      "accuracy": NaN,
+      "precision": NaN,
+      "recall": NaN,
+      "f1": NaN
+    },
+    {
+      "threshold": 0.7,
+      "coverage_pct": 0.0,
+      "n_samples": 0,
+      "accuracy": NaN,
+      "precision": NaN,
+      "recall": NaN,
+      "f1": NaN
+    },
+    {
+      "threshold": 0.75,
+      "coverage_pct": 0.0,
+      "n_samples": 0,
+      "accuracy": NaN,
+      "precision": NaN,
+      "recall": NaN,
+      "f1": NaN
+    },
+    {
+      "threshold": 0.8,
+      "coverage_pct": 0.0,
+      "n_samples": 0,
+      "accuracy": NaN,
+      "precision": NaN,
+      "recall": NaN,
+      "f1": NaN
+    }
+  ],
+  "backtest_60": {
+    "total_return_pct": 0.0,
+    "n_trades": 0,
+    "sharpe": 0.0,
+    "max_drawdown_pct": 0.0
+  },
+  "backtest_65": {
+    "total_return_pct": 0.0,
+    "n_trades": 0,
+    "sharpe": 0.0,
+    "max_drawdown_pct": 0.0
+  },
+  "backtest_70": {
+    "total_return_pct": 0.0,
+    "n_trades": 0,
+    "sharpe": 0.0,
+    "max_drawdown_pct": 0.0
+  }
+}

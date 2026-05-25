@@ -1,0 +1,117 @@
+{
+  "ozet": {
+    "toplam_ornek": 10,
+    "kategori_dogruluk_orani": 50.0,
+    "ortalama_gun_hatasi": 2.4,
+    "mae": 2.4,
+    "rmse": 2.8635642126552705
+  },
+  "karmaşıklık_matrisi": {
+    "guclu_tavan": {
+      "guclu_tavan": 4,
+      "orta_tavan": 0,
+      "zayif_tavan": 0,
+      "riskli": 0
+    },
+    "orta_tavan": {
+      "guclu_tavan": 3,
+      "orta_tavan": 1,
+      "zayif_tavan": 0,
+      "riskli": 0
+    },
+    "zayif_tavan": {
+      "guclu_tavan": 0,
+      "orta_tavan": 1,
+      "zayif_tavan": 0,
+      "riskli": 0
+    },
+    "riskli": {
+      "guclu_tavan": 0,
+      "orta_tavan": 0,
+      "zayif_tavan": 1,
+      "riskli": 0
+    }
+  },
+  "detaylar": [
+    {
+      "sirket": "Baydöner (BAYD)",
+      "tahmin_skor": 86.45,
+      "tahmin_kategori": "guclu_tavan",
+      "gercek_gun": 8,
+      "dogru": true,
+      "gun_hatasi": 1
+    },
+    {
+      "sirket": "Beyçimento (BEYÇ)",
+      "tahmin_skor": 79.35,
+      "tahmin_kategori": "orta_tavan",
+      "gercek_gun": 5,
+      "dogru": true,
+      "gun_hatasi": 0
+    },
+    {
+      "sirket": "Koton (KOTON)",
+      "tahmin_skor": 83.9,
+      "tahmin_kategori": "guclu_tavan",
+      "gercek_gun": 4,
+      "dogru": false,
+      "gun_hatasi": 5
+    },
+    {
+      "sirket": "Mogan Enerji (MOGAN)",
+      "tahmin_skor": 89.75,
+      "tahmin_kategori": "guclu_tavan",
+      "gercek_gun": 10,
+      "dogru": true,
+      "gun_hatasi": 1
+    },
+    {
+      "sirket": "Astor Enerji (ASTOR)",
+      "tahmin_skor": 89.45,
+      "tahmin_kategori": "guclu_tavan",
+      "gercek_gun": 6,
+      "dogru": false,
+      "gun_hatasi": 3
+    },
+    {
+      "sirket": "Tümosan (TMSN)",
+      "tahmin_skor": 64.65,
+      "tahmin_kategori": "orta_tavan",
+      "gercek_gun": 3,
+      "dogru": false,
+      "gun_hatasi": 2
+    },
+    {
+      "sirket": "Kervan Gıda (KRVAN)",
+      "tahmin_skor": 82.0,
+      "tahmin_kategori": "guclu_tavan",
+      "gercek_gun": 4,
+      "dogru": false,
+      "gun_hatasi": 5
+    },
+    {
+      "sirket": "Büyük Prodüksiyon (BÜYÜK)",
+      "tahmin_skor": 53.3,
+      "tahmin_kategori": "zayif_tavan",
+      "gercek_gun": 1,
+      "dogru": false,
+      "gun_hatasi": 2
+    },
+    {
+      "sirket": "Tekno Yatırım (TEKNO)",
+      "tahmin_skor": 92.75,
+      "tahmin_kategori": "guclu_tavan",
+      "gercek_gun": 12,
+      "dogru": true,
+      "gun_hatasi": 3
+    },
+    {
+      "sirket": "Savunma Metal (SAVUN)",
+      "tahmin_skor": 91.4,
+      "tahmin_kategori": "guclu_tavan",
+      "gercek_gun": 7,
+      "dogru": true,
+      "gun_hatasi": 2
+    }
+  ]
+}

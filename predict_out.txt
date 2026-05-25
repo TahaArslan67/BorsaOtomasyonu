@@ -1,0 +1,88 @@
+﻿
+======================================================================
+  GMSTR (G├╝m├╝┼ş BYF) GEL─░┼ŞM─░┼Ş YAPAY ZEKA TAHM─░N S─░STEM─░ v2.0
+  XGB + LGB + RF + GB + ET + MLP -> Stacked Ensemble
+  5Y G├╝nl├╝k + 2Y Saatlik | Makro ├ûzellikler | Dinamik Hedef
+======================================================================
+
+[MOD] TAHM─░N
+
+[Predictor] Sistem y├╝kleniyor...
+  Ô£ô Model y├╝klendi: 1d_daily
+  Ô£ô Model y├╝klendi: 3d_daily
+  Ô£ô Model y├╝klendi: 5d_daily
+  Ô£ô Model y├╝klendi: 10d_daily
+  Ô£ô Model y├╝klendi: 1h_hourly
+  Ô£ô Model y├╝klendi: 4h_hourly
+[Predictor] Sistem haz─▒r. 6 model y├╝klendi.
+
+--- G├£NL├£K TAHM─░NLER ---
+[DataLoader] Ger├ğek fiyat ├Âl├ğeklemesi uyguland─▒: Close = 36.82 + 0.422616 * fund_ret
+[DataLoader] Ham veri y├╝klendi: 1339 sat─▒r | 2021-01-04 ÔåÆ 2026-05-12
+[DataLoader] Temizlik tamamland─▒: 1339 ÔåÆ 1339 sat─▒r
+  ÔÜá A┼ş─▒r─▒ fiyat s─▒├ğramas─▒ (>%20): 1 sat─▒r
+  ÔÜá Eksik i┼şlem g├╝n├╝ (tatil): 58 g├╝n
+
+======================================================================
+GMSTR G├£NCEL TAHM─░NLER
+======================================================================
+Tarih: 2026-05-12 00:00:00
+Son Fiyat: 782.00 TRY
+----------------------------------------------------------------------
+
+­şö┤     1d_daily | A┼ŞA─ŞI Ôåô    | G├╝ven: 69% ÔûêÔûêÔûêÔûêÔûêÔûê    
+       ÔåÆ Tahmini: 771.82 TRY (-1.30%)
+       Base Votes: xgb=0.36, lgb=0.35, rf=0.33, gb=0.35, et=0.37, mlp=0.34
+       Sinyal: G├£├çL├£
+
+­şö┤     3d_daily | A┼ŞA─ŞI Ôåô    | G├╝ven: 65% ÔûêÔûêÔûêÔûêÔûêÔûê    
+       ÔåÆ Tahmini: 767.89 TRY (-1.80%)
+       Base Votes: xgb=0.38, lgb=0.38, rf=0.36, gb=0.35, et=0.41, mlp=0.35
+       Sinyal: G├£├çL├£
+
+­şö┤     5d_daily | A┼ŞA─ŞI Ôåô    | G├╝ven: 60% ÔûêÔûêÔûêÔûêÔûêÔûê    
+       ÔåÆ Tahmini: 769.84 TRY (-1.55%)
+       Base Votes: xgb=0.40, lgb=0.40, rf=0.39, gb=0.41, et=0.37, mlp=0.36
+       Sinyal: G├£├çL├£
+
+­şö┤    10d_daily | A┼ŞA─ŞI Ôåô    | G├╝ven: 63% ÔûêÔûêÔûêÔûêÔûêÔûê    
+       ÔåÆ Tahmini: 760.56 TRY (-2.74%)
+       Base Votes: xgb=0.40, lgb=0.40, rf=0.39, gb=0.42, et=0.38, mlp=0.38
+       Sinyal: G├£├çL├£
+======================================================================
+
+============================================================
+GMSTR KARAR DESTEK ├ûZET─░
+============================================================
+­şö┤ B├£Y├£K ├çO─ŞUNLUK A┼ŞA─ŞI (1d_daily, 3d_daily, 5d_daily, 10d_daily)
+   G├╝ven: 60%+
+============================================================
+
+--- SAATL─░K TAHM─░NLER ---
+
+======================================================================
+GMSTR G├£NCEL TAHM─░NLER
+======================================================================
+Tarih: 2026-05-13 14:30:00+00:00
+Son Fiyat: 782.00 TRY
+----------------------------------------------------------------------
+
+­şö┤    1h_hourly | A┼ŞA─ŞI Ôåô    | G├╝ven: 73% ÔûêÔûêÔûêÔûêÔûêÔûêÔûê   
+       ÔåÆ Tahmini: 778.64 TRY (-0.43%)
+       Base Votes: xgb=0.22, lgb=0.24, rf=0.23, gb=0.28, et=0.21, mlp=0.19
+       Sinyal: ├çOK G├£├çL├£
+
+­şö┤    4h_hourly | A┼ŞA─ŞI Ôåô    | G├╝ven: 66% ÔûêÔûêÔûêÔûêÔûêÔûê    
+       ÔåÆ Tahmini: 777.33 TRY (-0.60%)
+       Base Votes: xgb=0.29, lgb=0.28, rf=0.30, gb=0.31, et=0.31, mlp=0.33
+       Sinyal: G├£├çL├£
+======================================================================
+
+============================================================
+GMSTR KARAR DESTEK ├ûZET─░
+============================================================
+­şö┤ B├£Y├£K ├çO─ŞUNLUK A┼ŞA─ŞI (1h_hourly, 4h_hourly)
+   G├╝ven: 66%+
+============================================================
+
+Tahminler kaydedildi: gmstr_models\latest_predictions.json

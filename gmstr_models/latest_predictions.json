@@ -1,0 +1,50 @@
+{
+  "1d_daily": {
+    "direction": "YUKARI ↑",
+    "prob_up": 0.523,
+    "prob_down": 0.477,
+    "confidence": 0.523,
+    "signal_strength": "ZAYIF",
+    "current_price": 703.0,
+    "predicted_price": 704.1,
+    "expected_change_pct": 0.16,
+    "base_votes": {},
+    "date": "2026-05-19 22:26:35"
+  },
+  "3d_daily": {
+    "direction": "YUKARI ↑",
+    "prob_up": 0.5879,
+    "prob_down": 0.4121,
+    "confidence": 0.5879,
+    "signal_strength": "ZAYIF",
+    "current_price": 703.0,
+    "predicted_price": 710.29,
+    "expected_change_pct": 1.04,
+    "base_votes": {},
+    "date": "2026-05-19 22:26:35"
+  },
+  "5d_daily": {
+    "direction": "YUKARI ↑",
+    "prob_up": 0.5311,
+    "prob_down": 0.4689,
+    "confidence": 0.5311,
+    "signal_strength": "ZAYIF",
+    "current_price": 703.0,
+    "predicted_price": 706.33,
+    "expected_change_pct": 0.47,
+    "base_votes": {},
+    "date": "2026-05-19 22:26:35"
+  },
+  "10d_daily": {
+    "direction": "AŞAĞI ↓",
+    "prob_up": 0.1993,
+    "prob_down": 0.8007,
+    "confidence": 0.8007,
+    "signal_strength": "ÇOK GÜÇLÜ",
+    "current_price": 703.0,
+    "predicted_price": 657.49,
+    "expected_change_pct": -6.47,
+    "base_votes": {},
+    "date": "2026-05-19 22:26:35"
+  }
+}
