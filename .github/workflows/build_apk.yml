@@ -44,7 +44,6 @@ jobs:
         if [ -n "$SDKMGR" ]; then
           mkdir -p $ANDROID_HOME/tools/bin
           ln -sf $SDKMGR $ANDROID_HOME/tools/bin/sdkmanager
-          chmod +x $SDKMGR
           echo "sdkmanager symlink created"
           $ANDROID_HOME/tools/bin/sdkmanager --version || true
         fi
