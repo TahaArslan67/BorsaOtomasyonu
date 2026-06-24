@@ -1529,24 +1529,19 @@ def scheduled_predictions():
             return None
         return prediction_system.make_prediction(timeframe)
     
-    # Her gün 09:00 ve 15:00'te tahmin yap (sadece hafta içi)
-    schedule.every().monday.at("09:00").do(lambda: safe_prediction("4h"))
-    schedule.every().monday.at("15:00").do(lambda: safe_prediction("4h"))
-    schedule.every().tuesday.at("09:00").do(lambda: safe_prediction("4h"))
-    schedule.every().tuesday.at("15:00").do(lambda: safe_prediction("4h"))
-    schedule.every().wednesday.at("09:00").do(lambda: safe_prediction("4h"))
-    schedule.every().wednesday.at("15:00").do(lambda: safe_prediction("4h"))
-    schedule.every().thursday.at("09:00").do(lambda: safe_prediction("4h"))
-    schedule.every().thursday.at("15:00").do(lambda: safe_prediction("4h"))
-    schedule.every().friday.at("09:00").do(lambda: safe_prediction("4h"))
-    schedule.every().friday.at("15:00").do(lambda: safe_prediction("4h"))
+    # Her gün 09:00, 11:00, 13:00, 15:00'te tahmin yap (sadece hafta içi)
+    for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']:
+        getattr(schedule.every(), day).at("09:00").do(lambda: safe_prediction("4h"))
+        getattr(schedule.every(), day).at("11:00").do(lambda: safe_prediction("4h"))
+        getattr(schedule.every(), day).at("13:00").do(lambda: safe_prediction("4h"))
+        getattr(schedule.every(), day).at("15:00").do(lambda: safe_prediction("4h"))
     
     # Her saat tahminleri güncelle (doğrulama her zaman çalışabilir)
     schedule.every().hour.do(lambda: prediction_system.update_predictions())
     
     while True:
         schedule.run_pending()
-        time.sleep(60)
+        time_module.sleep(60)
 
 if __name__ == '__main__':
     # İlk başlatma
