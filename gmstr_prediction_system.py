@@ -1214,8 +1214,9 @@ def get_predictions():
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT timestamp, current_price, predicted_direction, predicted_price, 
-                   confidence, timeframe, actual_price, is_correct
+            SELECT timestamp, predicted_for_time, current_price, predicted_direction, 
+                   predicted_price, confidence, timeframe, actual_price, is_correct,
+                   telegram_sent
             FROM predictions
             ORDER BY timestamp DESC
             LIMIT 50
@@ -1225,15 +1226,15 @@ def get_predictions():
         for row in cursor.fetchall():
             predictions.append({
                 'timestamp': row[0],
-                'predicted_for_time': row[1] if len(row) > 8 else None,
-                'current_price': row[2] if len(row) > 8 else row[1],
-                'predicted_direction': row[3] if len(row) > 8 else row[2],
-                'predicted_price': row[4] if len(row) > 8 else row[3],
-                'confidence': row[5] if len(row) > 8 else row[4],
-                'timeframe': row[6] if len(row) > 8 else row[5],
-                'actual_price': row[7] if len(row) > 8 else row[6],
-                'is_correct': row[8] if len(row) > 8 else row[7],
-                'telegram_sent': row[10] if len(row) > 10 else 0
+                'predicted_for_time': row[1],
+                'current_price': row[2],
+                'predicted_direction': row[3],
+                'predicted_price': row[4],
+                'confidence': row[5],
+                'timeframe': row[6],
+                'actual_price': row[7],
+                'is_correct': row[8],
+                'telegram_sent': row[9] if row[9] is not None else 0
             })
         
         conn.close()
