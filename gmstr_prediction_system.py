@@ -54,6 +54,13 @@ class GMSTRPredictionSystem:
         self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
         self.telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
         
+        # Cache
+        self._market_cache = None
+        self._market_cache_time = None
+        self._gmstr_cache = None
+        self._gmstr_cache_time = None
+        self._cache_ttl = 300  # 5 dakika
+        
     def send_telegram_message(self, message):
         """Telegram bot ile mesaj gönder"""
         if not self.telegram_bot_token or not self.telegram_chat_id:
@@ -155,7 +162,12 @@ class GMSTRPredictionSystem:
         logger.info("Veritabanı başlatıldı")
     
     def fetch_gmstr_data(self, period="2y"):
-        """GMSTR verilerini çek"""
+        """GMSTR verilerini çek (cache'li)"""
+        now = time_module.time()
+        if self._gmstr_cache and self._gmstr_cache_time and (now - self._gmstr_cache_time) < self._cache_ttl:
+            logger.info("GMSTR verisi cache'den alındı")
+            return self._gmstr_cache
+        
         try:
             # Yahoo Finance'den GMSTR verisi (1h max 730 gün)
             ticker = yf.Ticker("GMSTR.IS")
@@ -163,7 +175,7 @@ class GMSTRPredictionSystem:
             
             if data is None:
                 logger.error("GMSTR verisi None döndü")
-                return None
+                return self._gmstr_cache if self._gmstr_cache else None
             
             # DataFrame'e çevir
             if isinstance(data, list):
@@ -176,19 +188,26 @@ class GMSTRPredictionSystem:
                     data.set_index('timestamp', inplace=True)
                 else:
                     logger.error("GMSTR verisi formatı geçersiz")
-                    return None
+                    return self._gmstr_cache if self._gmstr_cache else None
             
             if data.empty:
                 logger.error("GMSTR verisi çekilemedi")
-                return None
-                
+                return self._gmstr_cache if self._gmstr_cache else None
+            
+            self._gmstr_cache = data
+            self._gmstr_cache_time = now
             return data
         except Exception as e:
             logger.error(f"GMSTR veri çekme hatası: {e}")
-            return None
+            return self._gmstr_cache if self._gmstr_cache else None
     
     def fetch_market_data(self, period="2y"):
-        """Piyasa verilerini çek - Genişletilmiş"""
+        """Piyasa verilerini çek - Cache'li"""
+        now = time_module.time()
+        if self._market_cache and self._market_cache_time and (now - self._market_cache_time) < self._cache_ttl:
+            logger.info("Piyasa verisi cache'den alındı")
+            return self._market_cache
+        
         try:
             # BIST 100
             bist100 = yf.Ticker("XU100.IS").history(period=period, interval="1h")
@@ -242,7 +261,7 @@ class GMSTRPredictionSystem:
                 else:
                     silver = None
             
-            return {
+            result = {
                 'bist100': bist100,
                 'usd_try': usd_try,
                 'gold': gold,
@@ -250,8 +269,16 @@ class GMSTRPredictionSystem:
                 'vix': vix,
                 'oil': oil
             }
+            
+            self._market_cache = result
+            self._market_cache_time = now
+            return result
+            
         except Exception as e:
             logger.error(f"Piyasa veri çekme hatası: {e}")
+            if self._market_cache:
+                logger.warning("Önceki cache kullanılıyor")
+                return self._market_cache
             return None
     
     def calculate_technical_indicators(self, df):
@@ -879,6 +906,12 @@ class GMSTRPredictionSystem:
     def get_premarket_signal(self):
         """Borsa kapalıyken gümüş hareketine göre açılış sinyali - GMSTR kapanış anındaki gümüş fiyatından hesapla"""
         try:
+            # Cache kontrol - 5 dakika
+            now = time_module.time()
+            if hasattr(self, '_premarket_cache') and self._premarket_cache and hasattr(self, '_premarket_cache_time') and (now - self._premarket_cache_time) < 300:
+                logger.info("Pre-market sinyali cache'den alındı")
+                return self._premarket_cache
+            
             # GMSTR son kapanış fiyatı ve zamanı
             gmstr = yf.Ticker("GMSTR.IS")
             gmstr_data = gmstr.history(period="5d")
@@ -941,7 +974,7 @@ class GMSTRPredictionSystem:
             # Hedef fiyat = GMSTR kapanış × gümüş değişimi
             target = gmstr_last_close * (1 + silver_change_pct / 100)
             
-            return {
+            result = {
                 'gmstr_last_close': gmstr_last_close,
                 'gmstr_close_time': gmstr_close_time.strftime('%d.%m.%Y %H:%M'),
                 'silver_at_close': silver_at_gmstr_close,
@@ -955,8 +988,16 @@ class GMSTRPredictionSystem:
                 'timestamp': datetime.now().strftime('%d.%m.%Y %H:%M')
             }
             
+            # Cache'e kaydet
+            self._premarket_cache = result
+            self._premarket_cache_time = time_module.time()
+            
+            return result
+            
         except Exception as e:
             logger.error(f"Pre-market sinyal hatası: {e}")
+            if hasattr(self, '_premarket_cache') and self._premarket_cache:
+                return self._premarket_cache
             return None
     
     def backtest_premarket(self, days=30):
