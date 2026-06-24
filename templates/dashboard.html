@@ -336,6 +336,36 @@
                     <button class="btn" onclick="runBacktest()">Backtest Çalıştır</button>
                 </div>
             </div>
+            <!-- Model Bilgileri Kartı -->
+            <div id="modelInfoCard" style="display: none; background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); border-radius: 10px; padding: 15px; margin-bottom: 15px; color: white;">
+                <div style="display: flex; gap: 30px; flex-wrap: wrap; align-items: center;">
+                    <div>
+                        <div style="font-size: 0.85rem; opacity: 0.9;">Model Doğruluğu</div>
+                        <div style="font-size: 2rem; font-weight: bold;" id="modelAccuracy">-</div>
+                    </div>
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;">
+                            <div>
+                                <div style="font-size: 0.8rem; opacity: 0.9;">Son Eğitim</div>
+                                <div style="font-weight: bold;" id="modelLastTrained">-</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.8rem; opacity: 0.9;">Eğitim Örneği</div>
+                                <div style="font-weight: bold;" id="modelTrainSamples">-</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.8rem; opacity: 0.9;">Test Örneği</div>
+                                <div style="font-weight: bold;" id="modelTestSamples">-</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.8rem; opacity: 0.9;">Özellik Sayısı</div>
+                                <div style="font-weight: bold;" id="modelFeatures">-</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; padding: 10px; margin-bottom: 15px; font-size: 14px;">
                 <strong>ℹ️ GMSTR Hakkında:</strong> QNB Finans Portföy Gümüş BYF. 
                 Borsa kapalıyken (18:10-09:00) fiyat sabit kalır, bu nedenle gece tahminleri güvenilmez.
@@ -428,6 +458,7 @@
             loadMarketData();
             checkMarketStatus();
             loadPremarketSignal();
+            loadModelInfo();
             
             // Her 5 dakikada bir verileri güncelle
             setInterval(() => {
@@ -436,8 +467,33 @@
                 loadMarketData();
                 checkMarketStatus();
                 loadPremarketSignal();
+                loadModelInfo();
             }, 5 * 60 * 1000);
         });
+        
+        async function loadModelInfo() {
+            try {
+                const response = await fetch('/api/model-info');
+                const data = await response.json();
+                
+                const card = document.getElementById('modelInfoCard');
+                
+                if (data && !data.error) {
+                    card.style.display = 'block';
+                    document.getElementById('modelAccuracy').textContent = (data.accuracy * 100).toFixed(1) + '%';
+                    document.getElementById('modelAccuracy').style.color = data.accuracy >= 0.60 ? '#fff' : '#ffeb3b';
+                    document.getElementById('modelLastTrained').textContent = data.last_trained || '-';
+                    document.getElementById('modelTrainSamples').textContent = data.train_samples || '-';
+                    document.getElementById('modelTestSamples').textContent = data.test_samples || '-';
+                    document.getElementById('modelFeatures').textContent = data.features_used || '-';
+                } else {
+                    card.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Model bilgisi yüklenemedi:', error);
+                document.getElementById('modelInfoCard').style.display = 'none';
+            }
+        }
         
         async function loadPremarketSignal() {
             try {

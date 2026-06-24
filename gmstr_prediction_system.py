@@ -563,7 +563,21 @@ class GMSTRPredictionSystem:
             logger.info(f"Test Accuracy: {accuracy:.4f}")
             logger.info(f"Classification Report:\n{classification_report(y_test, y_pred)}")
             
-            if accuracy >= 0.60:  # Eşiği %60'a düşür (daha gerçekçi)
+            # Sonuçları her zaman kaydet (başarılı veya başarısız)
+            import json
+            model_info = {
+                'last_trained': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'accuracy': round(accuracy, 4),
+                'test_samples': len(y_test),
+                'train_samples': len(X_train),
+                'status': 'success' if accuracy >= 0.60 else 'failed',
+                'threshold': 0.60,
+                'features_used': len(self.features)
+            }
+            with open('model_info.json', 'w') as f:
+                json.dump(model_info, f, indent=2)
+            
+            if accuracy >= 0.60:
                 logger.info(f"Model başarı oranına ulaştı: {accuracy:.4f}")
                 self.model = best_model
                 joblib.dump(best_model, self.model_path)
@@ -871,11 +885,13 @@ class GMSTRPredictionSystem:
             if gmstr_data.empty:
                 return None
             gmstr_last_close = gmstr_data['Close'].iloc[-1]
-            gmstr_close_time = gmstr_data.index[-1]  # Son kapanış zamanı
+            # Yahoo Finance günlük veri saatini 00:00 verir, ama gerçek kapanış 18:10
+            gmstr_date = gmstr_data.index[-1]
+            gmstr_close_time = gmstr_date.replace(hour=18, minute=10, second=0, microsecond=0)
             
-            # Gerçek gümüş (SI=F) verisi
+            # Gerçek gümüş (SI=F) verisi - SAATLİK interval
             silver = yf.Ticker("SI=F")
-            silver_data = silver.history(period="7d")  # Daha uzun süre (hafta sonu olabilir)
+            silver_data = silver.history(period="7d", interval="1h")  # 7/24 açık olduğu için 1h
             if silver_data.empty:
                 return None
             silver_current = silver_data['Close'].iloc[-1]
@@ -1231,6 +1247,21 @@ def get_performance():
     """Performans verileri"""
     stats = prediction_system.get_performance_stats()
     return jsonify(stats)
+
+@app.route('/api/model-info')
+def get_model_info():
+    """Model eğitim bilgileri"""
+    try:
+        import json
+        import os
+        if os.path.exists('model_info.json'):
+            with open('model_info.json', 'r') as f:
+                info = json.load(f)
+            return jsonify(info)
+        else:
+            return jsonify({'error': 'Model henüz eğitilmemiş'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/predict', methods=['POST'])
 def make_prediction():
