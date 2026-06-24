@@ -6,10 +6,12 @@ services:
     startCommand: gunicorn gmstr_prediction_system:app
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: 3.11
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+      - key: FLASK_DEBUG
+        value: false
     plan: free
     autoDeploy: true
