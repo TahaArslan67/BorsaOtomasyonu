@@ -44,11 +44,26 @@ except ImportError:
 
 class GMSTRPredictionSystem:
     def __init__(self):
-        self.db_path = 'gmstr_predictions.db'
         self.model_path = 'gmstr_prediction_model.pkl'
-        self.init_database()
         self.model = None
         self.features = []
+        
+        # Veritabanı ayarları - PostgreSQL veya SQLite
+        self.database_url = os.environ.get('DATABASE_URL', '')
+        self.db_path = 'gmstr_predictions.db'
+        self.is_postgres = bool(self.database_url)
+        
+        if self.is_postgres:
+            try:
+                import psycopg2
+                logger.info("PostgreSQL veritabanı kullanılıyor")
+            except ImportError:
+                logger.warning("psycopg2 bulunamadı, SQLite kullanılıyor")
+                self.is_postgres = False
+        else:
+            logger.info("SQLite veritabanı kullanılıyor")
+        
+        self.init_database()
         
         # Telegram Bot Config
         self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
@@ -87,75 +102,132 @@ class GMSTRPredictionSystem:
             logger.error(f"Telegram mesaj gönderme hatası: {e}")
             return False
         
+    def get_db_connection(self):
+        """Veritabanı bağlantısı döndür (PostgreSQL veya SQLite)"""
+        if self.is_postgres:
+            import psycopg2
+            conn = psycopg2.connect(self.database_url)
+            return conn
+        else:
+            return sqlite3.connect(self.db_path)
+    
     def init_database(self):
         """Veritabanını başlat - eksik sütunları otomatik ekle"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         
-        # Tahminler tablosu
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS predictions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME,
-                predicted_for_time DATETIME,
-                current_price REAL,
-                predicted_direction TEXT,
-                predicted_price REAL,
-                confidence REAL,
-                timeframe TEXT,
-                actual_price REAL,
-                actual_direction TEXT,
-                is_correct INTEGER,
-                telegram_sent INTEGER DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Eksik sütunları kontrol et ve ekle
-        cursor.execute("PRAGMA table_info(predictions)")
-        existing_columns = [row[1] for row in cursor.fetchall()]
-        
-        if 'predicted_for_time' not in existing_columns:
-            cursor.execute("ALTER TABLE predictions ADD COLUMN predicted_for_time DATETIME")
-            logger.info("predicted_for_time sütunu eklendi")
-        
-        if 'actual_direction' not in existing_columns:
-            cursor.execute("ALTER TABLE predictions ADD COLUMN actual_direction TEXT")
-            logger.info("actual_direction sütunu eklendi")
-        
-        if 'telegram_sent' not in existing_columns:
-            cursor.execute("ALTER TABLE predictions ADD COLUMN telegram_sent INTEGER DEFAULT 0")
-            logger.info("telegram_sent sütunu eklendi")
-        
-        # Performans tablosu
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS performance (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date DATE,
-                total_predictions INTEGER,
-                correct_predictions INTEGER,
-                accuracy REAL,
-                timeframe TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Backtesting tablosu
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS backtest_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date DATE,
-                total_trades INTEGER,
-                winning_trades INTEGER,
-                losing_trades INTEGER,
-                win_rate REAL,
-                total_return REAL,
-                sharpe_ratio REAL,
-                max_drawdown REAL,
-                timeframe TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
+        if self.is_postgres:
+            # PostgreSQL tabloları
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS predictions (
+                    id SERIAL PRIMARY KEY,
+                    timestamp TIMESTAMP,
+                    predicted_for_time TIMESTAMP,
+                    current_price REAL,
+                    predicted_direction TEXT,
+                    predicted_price REAL,
+                    confidence REAL,
+                    timeframe TEXT,
+                    actual_price REAL,
+                    actual_direction TEXT,
+                    is_correct INTEGER,
+                    telegram_sent INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS performance (
+                    id SERIAL PRIMARY KEY,
+                    date DATE,
+                    total_predictions INTEGER,
+                    correct_predictions INTEGER,
+                    accuracy REAL,
+                    timeframe TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS backtest_results (
+                    id SERIAL PRIMARY KEY,
+                    date DATE,
+                    total_trades INTEGER,
+                    winning_trades INTEGER,
+                    losing_trades INTEGER,
+                    win_rate REAL,
+                    total_return REAL,
+                    sharpe_ratio REAL,
+                    max_drawdown REAL,
+                    timeframe TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+        else:
+            # SQLite tabloları
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS predictions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME,
+                    predicted_for_time DATETIME,
+                    current_price REAL,
+                    predicted_direction TEXT,
+                    predicted_price REAL,
+                    confidence REAL,
+                    timeframe TEXT,
+                    actual_price REAL,
+                    actual_direction TEXT,
+                    is_correct INTEGER,
+                    telegram_sent INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Eksik sütunları kontrol et ve ekle
+            cursor.execute("PRAGMA table_info(predictions)")
+            existing_columns = [row[1] for row in cursor.fetchall()]
+            
+            if 'predicted_for_time' not in existing_columns:
+                cursor.execute("ALTER TABLE predictions ADD COLUMN predicted_for_time DATETIME")
+                logger.info("predicted_for_time sütunu eklendi")
+            
+            if 'actual_direction' not in existing_columns:
+                cursor.execute("ALTER TABLE predictions ADD COLUMN actual_direction TEXT")
+                logger.info("actual_direction sütunu eklendi")
+            
+            if 'telegram_sent' not in existing_columns:
+                cursor.execute("ALTER TABLE predictions ADD COLUMN telegram_sent INTEGER DEFAULT 0")
+                logger.info("telegram_sent sütunu eklendi")
+            
+            # Performans tablosu
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS performance (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date DATE,
+                    total_predictions INTEGER,
+                    correct_predictions INTEGER,
+                    accuracy REAL,
+                    timeframe TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Backtesting tablosu
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS backtest_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date DATE,
+                    total_trades INTEGER,
+                    winning_trades INTEGER,
+                    losing_trades INTEGER,
+                    win_rate REAL,
+                    total_return REAL,
+                    sharpe_ratio REAL,
+                    max_drawdown REAL,
+                    timeframe TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
         
         conn.commit()
         conn.close()
@@ -739,16 +811,27 @@ class GMSTRPredictionSystem:
     def save_prediction(self, current_price, direction, target_price, confidence, timeframe, predicted_for_time=None):
         """Tahmini veritabanına kaydet ve ID döndür"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.get_db_connection()
             cursor = conn.cursor()
             
-            cursor.execute('''
-                INSERT INTO predictions (timestamp, predicted_for_time, current_price, predicted_direction, 
-                predicted_price, confidence, timeframe)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (datetime.now(), predicted_for_time, current_price, direction, target_price, confidence, timeframe))
+            now = datetime.now()
             
-            pred_id = cursor.lastrowid
+            if self.is_postgres:
+                cursor.execute('''
+                    INSERT INTO predictions (timestamp, predicted_for_time, current_price, predicted_direction, 
+                    predicted_price, confidence, timeframe)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                ''', (now, predicted_for_time, current_price, direction, target_price, confidence, timeframe))
+                pred_id = cursor.fetchone()[0]
+            else:
+                cursor.execute('''
+                    INSERT INTO predictions (timestamp, predicted_for_time, current_price, predicted_direction, 
+                    predicted_price, confidence, timeframe)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (now, predicted_for_time, current_price, direction, target_price, confidence, timeframe))
+                pred_id = cursor.lastrowid
+            
             conn.commit()
             conn.close()
             
@@ -761,9 +844,10 @@ class GMSTRPredictionSystem:
     def update_telegram_status(self, pred_id, status):
         """Telegram gönderim durumunu güncelle"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.get_db_connection()
             cursor = conn.cursor()
-            cursor.execute('UPDATE predictions SET telegram_sent = ? WHERE id = ?', (status, pred_id))
+            ph = '%s' if self.is_postgres else '?'
+            cursor.execute(f'UPDATE predictions SET telegram_sent = {ph} WHERE id = {ph}', (status, pred_id))
             conn.commit()
             conn.close()
         except Exception as e:
@@ -772,32 +856,45 @@ class GMSTRPredictionSystem:
     def update_predictions(self):
         """Tahminleri güncelle (doğruluk kontrolü) - Otomatik"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.get_db_connection()
             cursor = conn.cursor()
             
-            # Doğrulanmamış tahminleri al (zamanı geçmiş olanları)
-            cursor.execute('''
-                SELECT id, timestamp, predicted_for_time, current_price, predicted_price, predicted_direction, confidence
-                FROM predictions
-                WHERE actual_price IS NULL
-                AND (predicted_for_time < datetime('now') OR datetime(timestamp) < datetime('now', '-6 hours'))
-            ''')
+            now = datetime.now()
+            six_hours_ago = now - timedelta(hours=6)
+            
+            if self.is_postgres:
+                cursor.execute('''
+                    SELECT id, timestamp, predicted_for_time, current_price, predicted_price, predicted_direction, confidence
+                    FROM predictions
+                    WHERE actual_price IS NULL
+                    AND (predicted_for_time < %s OR timestamp < %s)
+                ''', (now, six_hours_ago))
+            else:
+                cursor.execute('''
+                    SELECT id, timestamp, predicted_for_time, current_price, predicted_price, predicted_direction, confidence
+                    FROM predictions
+                    WHERE actual_price IS NULL
+                    AND (predicted_for_time < datetime('now') OR datetime(timestamp) < datetime('now', '-6 hours'))
+                ''')
             
             predictions = cursor.fetchall()
             
             if len(predictions) == 0:
+                conn.close()
                 return
             
             # O anki fiyatı al
             gmstr_data = self.fetch_gmstr_data(period="1d")
             if gmstr_data is None:
                 logger.error("GMSTR verisi çekilemedi, tahminler güncellenemiyor")
+                conn.close()
                 return
                 
             actual_price = gmstr_data['Close'].iloc[-1]
             
             correct_count = 0
             total_count = len(predictions)
+            ph = '%s' if self.is_postgres else '?'
             
             for pred in predictions:
                 pred_id, timestamp, pred_for_time, current_price, pred_price, pred_direction, confidence = pred
@@ -814,10 +911,10 @@ class GMSTRPredictionSystem:
                     correct_count += 1
                 
                 # Güncelle
-                cursor.execute('''
+                cursor.execute(f'''
                     UPDATE predictions
-                    SET actual_price = ?, actual_direction = ?, is_correct = ?
-                    WHERE id = ?
+                    SET actual_price = {ph}, actual_direction = {ph}, is_correct = {ph}
+                    WHERE id = {ph}
                 ''', (actual_price, actual_direction, is_correct, pred_id))
             
             conn.commit()
@@ -872,29 +969,41 @@ class GMSTRPredictionSystem:
     def get_performance_stats(self):
         """Performans istatistikleri"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.get_db_connection()
             cursor = conn.cursor()
             
-            # Son 7 günün performansı
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as total,
-                    SUM(is_correct) as correct,
-                    COUNT(*) * 100.0 / NULLIF(SUM(is_correct), 0) as accuracy
-                FROM predictions
-                WHERE is_correct IS NOT NULL
-                AND datetime(created_at) > datetime('now', '-7 days')
-            ''')
+            seven_days_ago = datetime.now() - timedelta(days=7)
+            
+            if self.is_postgres:
+                cursor.execute('''
+                    SELECT 
+                        COUNT(*) as total,
+                        SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END) as correct
+                    FROM predictions
+                    WHERE is_correct IS NOT NULL
+                    AND created_at > %s
+                ''', (seven_days_ago,))
+            else:
+                cursor.execute('''
+                    SELECT 
+                        COUNT(*) as total,
+                        SUM(is_correct) as correct
+                    FROM predictions
+                    WHERE is_correct IS NOT NULL
+                    AND datetime(created_at) > datetime('now', '-7 days')
+                ''')
             
             stats = cursor.fetchone()
             
             conn.close()
             
             if stats and stats[0] > 0:
+                total = stats[0]
+                correct = stats[1] or 0
                 return {
-                    'total_predictions': stats[0],
-                    'correct_predictions': stats[1],
-                    'accuracy': (stats[1] / stats[0]) * 100
+                    'total_predictions': total,
+                    'correct_predictions': correct,
+                    'accuracy': (correct / total) * 100
                 }
             
             return None
@@ -1155,16 +1264,27 @@ class GMSTRPredictionSystem:
             logger.info(f"Backtesting başlatılıyor: Son {days} gün")
             
             # Geçmiş tahminleri al
-            conn = sqlite3.connect(self.db_path)
+            conn = self.get_db_connection()
             cursor = conn.cursor()
-            cursor.execute('''
-                SELECT current_price, predicted_price, predicted_direction, 
-                       actual_price, confidence, is_correct
-                FROM predictions
-                WHERE is_correct IS NOT NULL
-                AND datetime(created_at) > datetime('now', '-{} days')
-                ORDER BY timestamp
-            '''.format(days))
+            
+            if self.is_postgres:
+                cursor.execute('''
+                    SELECT current_price, predicted_price, predicted_direction, 
+                           actual_price, confidence, is_correct
+                    FROM predictions
+                    WHERE is_correct IS NOT NULL
+                    AND created_at > NOW() - INTERVAL '%s days'
+                    ORDER BY timestamp
+                ''', (days,))
+            else:
+                cursor.execute('''
+                    SELECT current_price, predicted_price, predicted_direction, 
+                           actual_price, confidence, is_correct
+                    FROM predictions
+                    WHERE is_correct IS NOT NULL
+                    AND datetime(created_at) > datetime('now', '-{} days')
+                    ORDER BY timestamp
+                '''.format(days))
             
             trades = cursor.fetchall()
             conn.close()
@@ -1251,7 +1371,7 @@ def dashboard():
 def get_predictions():
     """Tahminleri getir"""
     try:
-        conn = sqlite3.connect('gmstr_predictions.db')
+        conn = prediction_system.get_db_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
