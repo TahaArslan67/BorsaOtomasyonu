@@ -1,0 +1,13 @@
+{
+  "15m_15min": {
+    "test_accuracy": 0.6059113300492611,
+    "cv_accuracy": 0.4495522388059701,
+    "test_auc": 0.3834244080145719,
+    "optimal_threshold": 0.5800000000000002,
+    "n_features": 59,
+    "n_samples": 1012,
+    "lookahead_bars": 8,
+    "silver_enhanced": true,
+    "trained_at": "2026-06-02T13:36:10.034643"
+  }
+}

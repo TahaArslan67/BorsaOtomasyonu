@@ -1,0 +1,2295 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GMSTR AI Tahmin Monitörü v2.0</title>
+<style>
+:root {
+  --bg: #0a0e1a;
+  --bg2: #111827;
+  --bg3: #1a2235;
+  --card: #1e2d45;
+  --border: #2a3f5f;
+  --text: #e2e8f0;
+  --text2: #94a3b8;
+  --accent: #3b82f6;
+  --green: #10b981;
+  --red: #ef4444;
+  --yellow: #f59e0b;
+  --purple: #8b5cf6;
+  --cyan: #06b6d4;
+  --orange: #f97316;
+  --silver: #c0c0c0;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Segoe UI',sans-serif; min-height:100vh; }
+
+/* NAV */
+.nav { background:var(--bg2); border-bottom:1px solid var(--border); padding:0 20px; display:flex; align-items:center; gap:0; position:sticky; top:0; z-index:100; }
+.nav-brand { color:var(--silver); font-size:1.1rem; font-weight:700; padding:14px 20px 14px 0; border-right:1px solid var(--border); margin-right:10px; display:flex; align-items:center; gap:8px; }
+.nav-brand span { color:var(--accent); }
+.nav-tab { padding:14px 18px; cursor:pointer; color:var(--text2); font-size:0.88rem; border-bottom:2px solid transparent; transition:all .2s; white-space:nowrap; }
+.nav-tab:hover { color:var(--text); }
+.nav-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+.nav-right { margin-left:auto; display:flex; align-items:center; gap:12px; }
+.price-badge { background:var(--bg3); border:1px solid var(--border); border-radius:8px; padding:6px 14px; font-size:0.85rem; }
+.price-badge .price-val { color:var(--green); font-weight:700; font-size:1rem; }
+.status-dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* PAGES */
+.page { display:none; padding:20px; max-width:1400px; margin:0 auto; }
+.page.active { display:block; }
+
+/* GRID */
+.grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; }
+.grid-4 { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; }
+@media(max-width:900px) { .grid-2,.grid-3,.grid-4 { grid-template-columns:1fr; } }
+
+/* CARDS */
+.card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; }
+.card-title { font-size:0.8rem; color:var(--text2); text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+.card-value { font-size:1.8rem; font-weight:700; }
+.card-sub { font-size:0.8rem; color:var(--text2); margin-top:4px; }
+
+/* SIGNAL CARDS */
+.signal-card { border-radius:12px; padding:20px; text-align:center; }
+.signal-card.strong-buy { background:linear-gradient(135deg,#064e3b,#065f46); border:1px solid var(--green); }
+.signal-card.buy { background:linear-gradient(135deg,#1a3a2a,#1e4a35); border:1px solid #34d399; }
+.signal-card.hold { background:linear-gradient(135deg,#1e2d45,#243550); border:1px solid var(--border); }
+.signal-card.sell { background:linear-gradient(135deg,#3a1a1a,#4a1e1e); border:1px solid #fb923c; }
+.signal-card.strong-sell { background:linear-gradient(135deg,#4a0a0a,#5a0e0e); border:1px solid var(--red); }
+.signal-text { font-size:1.6rem; font-weight:800; margin:8px 0; }
+.signal-action { font-size:0.9rem; color:var(--text2); }
+
+/* PREDICTION CARDS */
+.pred-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+@media(max-width:900px) { .pred-grid { grid-template-columns:1fr 1fr; } }
+.pred-card { background:var(--bg3); border:1px solid var(--border); border-radius:10px; padding:16px; text-align:center; }
+.pred-card .horizon { font-size:0.75rem; color:var(--text2); text-transform:uppercase; }
+.pred-card .direction { font-size:1.1rem; font-weight:700; margin:6px 0; }
+.pred-card .prob-bar { height:6px; background:var(--bg2); border-radius:3px; margin:8px 0; overflow:hidden; }
+.pred-card .prob-fill { height:100%; border-radius:3px; transition:width .5s; }
+.pred-card .prob-text { font-size:0.75rem; color:var(--text2); }
+.pred-card .confidence { font-size:0.8rem; margin-top:4px; }
+.up { color:var(--green); }
+.down { color:var(--red); }
+.neutral { color:var(--yellow); }
+
+/* NEWS */
+.news-item { background:var(--bg3); border:1px solid var(--border); border-radius:10px; padding:14px; margin-bottom:10px; display:flex; gap:12px; align-items:flex-start; }
+.news-sentiment { width:8px; min-width:8px; height:8px; border-radius:50%; margin-top:6px; }
+.news-sentiment.positive { background:var(--green); }
+.news-sentiment.negative { background:var(--red); }
+.news-sentiment.neutral { background:var(--yellow); }
+.news-title { font-size:0.9rem; font-weight:600; margin-bottom:4px; }
+.news-summary { font-size:0.8rem; color:var(--text2); line-height:1.5; }
+.news-meta { font-size:0.75rem; color:var(--text2); margin-top:6px; display:flex; gap:10px; }
+.news-impact { font-size:0.75rem; padding:2px 8px; border-radius:4px; }
+.news-impact.positive { background:#064e3b; color:#34d399; }
+.news-impact.negative { background:#4a0a0a; color:#f87171; }
+.news-impact.neutral { background:#3a2a00; color:#fbbf24; }
+
+/* FORM */
+.form-group { margin-bottom:16px; }
+.form-label { display:block; font-size:0.82rem; color:var(--text2); margin-bottom:6px; }
+.form-input { width:100%; background:var(--bg3); border:1px solid var(--border); border-radius:8px; padding:10px 14px; color:var(--text); font-size:0.9rem; outline:none; transition:border .2s; }
+.form-input:focus { border-color:var(--accent); }
+.form-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.form-select { width:100%; background:var(--bg3); border:1px solid var(--border); border-radius:8px; padding:10px 14px; color:var(--text); font-size:0.9rem; outline:none; }
+.btn { padding:10px 20px; border-radius:8px; border:none; cursor:pointer; font-size:0.9rem; font-weight:600; transition:all .2s; }
+.btn-primary { background:var(--accent); color:white; }
+.btn-primary:hover { background:#2563eb; }
+.btn-success { background:var(--green); color:white; }
+.btn-success:hover { background:#059669; }
+.btn-danger { background:var(--red); color:white; }
+.btn-danger:hover { background:#dc2626; }
+.btn-secondary { background:var(--bg3); color:var(--text); border:1px solid var(--border); }
+.btn-secondary:hover { background:var(--border); }
+.btn-sm { padding:6px 12px; font-size:0.8rem; }
+.btn-buy { background:linear-gradient(135deg,var(--green),#059669); color:white; }
+.btn-sell { background:linear-gradient(135deg,var(--red),#dc2626); color:white; }
+
+/* TABLE */
+.table-wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-size:0.85rem; }
+th { background:var(--bg3); color:var(--text2); padding:10px 12px; text-align:left; font-weight:600; font-size:0.78rem; text-transform:uppercase; border-bottom:1px solid var(--border); }
+td { padding:10px 12px; border-bottom:1px solid var(--border); }
+tr:hover td { background:rgba(255,255,255,.02); }
+.badge { display:inline-block; padding:3px 10px; border-radius:20px; font-size:0.75rem; font-weight:600; }
+.badge-buy { background:#064e3b; color:#34d399; }
+.badge-sell { background:#4a0a0a; color:#f87171; }
+.badge-open { background:#1e3a5f; color:#60a5fa; }
+.badge-closed { background:#1a1a2e; color:var(--text2); }
+
+/* STATS */
+.stat-row { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--border); }
+.stat-row:last-child { border-bottom:none; }
+.stat-label { font-size:0.85rem; color:var(--text2); }
+.stat-value { font-size:0.9rem; font-weight:600; }
+
+/* PROGRESS BAR */
+.progress { height:8px; background:var(--bg2); border-radius:4px; overflow:hidden; margin:6px 0; }
+.progress-fill { height:100%; border-radius:4px; transition:width .5s; }
+
+/* ALERTS */
+.alert { border-radius:10px; padding:14px 16px; margin-bottom:12px; display:flex; gap:12px; align-items:flex-start; }
+.alert-success { background:#064e3b; border:1px solid var(--green); }
+.alert-warning { background:#3a2a00; border:1px solid var(--yellow); }
+.alert-danger { background:#4a0a0a; border:1px solid var(--red); }
+.alert-info { background:#1e3a5f; border:1px solid var(--accent); }
+.alert-icon { font-size:1.2rem; }
+.alert-title { font-weight:700; font-size:0.9rem; margin-bottom:4px; }
+.alert-text { font-size:0.83rem; color:var(--text2); line-height:1.5; }
+
+/* MODEL VALIDATION */
+.model-card { background:var(--bg3); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:12px; }
+.model-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+.model-name { font-weight:700; font-size:0.95rem; }
+.model-status { font-size:0.8rem; padding:3px 10px; border-radius:20px; }
+.status-healthy { background:#064e3b; color:#34d399; }
+.status-weak { background:#3a2a00; color:#fbbf24; }
+.status-bad { background:#4a0a0a; color:#f87171; }
+.metric-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+.metric-item { text-align:center; }
+.metric-val { font-size:1.1rem; font-weight:700; }
+.metric-lbl { font-size:0.72rem; color:var(--text2); }
+
+/* SECTION HEADER */
+.section-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+.section-title { font-size:1.1rem; font-weight:700; display:flex; align-items:center; gap:8px; }
+.section-sub { font-size:0.82rem; color:var(--text2); margin-top:2px; }
+
+/* TOAST */
+.toast-container { position:fixed; bottom:20px; right:20px; z-index:1000; display:flex; flex-direction:column; gap:8px; }
+.toast { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px 16px; min-width:280px; display:flex; align-items:center; gap:10px; animation:slideIn .3s ease; }
+.toast.success { border-color:var(--green); }
+.toast.error { border-color:var(--red); }
+@keyframes slideIn { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
+
+/* LOADING */
+.loading { display:flex; align-items:center; justify-content:center; padding:40px; color:var(--text2); gap:10px; }
+.spinner { width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+@keyframes spin { to{transform:rotate(360deg)} }
+
+/* CHART PLACEHOLDER */
+.chart-area { background:var(--bg3); border:1px solid var(--border); border-radius:10px; padding:20px; min-height:200px; display:flex; align-items:center; justify-content:center; }
+
+/* COMBINED SIGNAL */
+.combined-box { background:var(--bg3); border-radius:12px; padding:20px; text-align:center; border:2px solid var(--border); }
+.combined-signal-text { font-size:2rem; font-weight:800; margin:10px 0; }
+.combined-meta { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:16px; }
+.combined-meta-item { background:var(--bg2); border-radius:8px; padding:10px; }
+.combined-meta-label { font-size:0.75rem; color:var(--text2); }
+.combined-meta-value { font-size:0.95rem; font-weight:600; margin-top:2px; }
+
+/* MONTHLY CHART */
+.monthly-bar-wrap { display:flex; align-items:flex-end; gap:6px; height:120px; padding:10px 0; }
+.monthly-bar-item { flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; }
+.monthly-bar { width:100%; border-radius:4px 4px 0 0; min-height:4px; transition:height .5s; }
+.monthly-bar.positive { background:var(--green); }
+.monthly-bar.negative { background:var(--red); }
+.monthly-bar-label { font-size:0.65rem; color:var(--text2); }
+.monthly-bar-val { font-size:0.65rem; }
+
+/* SEPARATOR */
+.sep { height:1px; background:var(--border); margin:16px 0; }
+
+/* REFRESH BTN */
+.refresh-btn { background:none; border:1px solid var(--border); border-radius:6px; padding:5px 10px; color:var(--text2); cursor:pointer; font-size:0.8rem; display:flex; align-items:center; gap:5px; }
+.refresh-btn:hover { border-color:var(--accent); color:var(--accent); }
+
+/* CONFIDENCE METER */
+.conf-meter { display:flex; align-items:center; gap:10px; }
+.conf-bar { flex:1; height:8px; background:var(--bg2); border-radius:4px; overflow:hidden; }
+.conf-fill { height:100%; border-radius:4px; }
+.conf-val { font-size:0.85rem; font-weight:700; min-width:40px; text-align:right; }
+
+/* EMPTY STATE */
+.empty-state { text-align:center; padding:40px; color:var(--text2); }
+.empty-state .empty-icon { font-size:3rem; margin-bottom:12px; }
+.empty-state p { font-size:0.9rem; }
+
+/* AI COMMENTARY */
+.ai-commentary-box { background:linear-gradient(135deg,#0f1f3d,#1a2d4a); border:2px solid var(--accent); border-radius:14px; padding:24px; }
+.ai-action-badge { display:inline-flex; align-items:center; gap:10px; padding:10px 20px; border-radius:30px; font-size:1.1rem; font-weight:800; margin-bottom:16px; }
+.ai-action-badge.buy { background:linear-gradient(135deg,#064e3b,#065f46); border:1px solid var(--green); color:#34d399; }
+.ai-action-badge.sell { background:linear-gradient(135deg,#4a0a0a,#5a0e0e); border:1px solid var(--red); color:#f87171; }
+.ai-action-badge.hold { background:linear-gradient(135deg,#3a2a00,#4a3500); border:1px solid var(--yellow); color:#fbbf24; }
+.ai-comment-text { font-size:0.92rem; line-height:1.7; color:var(--text); margin-bottom:12px; }
+.ai-strategy-text { font-size:0.88rem; line-height:1.7; color:var(--text2); background:var(--bg2); border-radius:8px; padding:12px 16px; margin-bottom:12px; border-left:3px solid var(--accent); }
+.ai-monthly-text { font-size:0.85rem; line-height:1.6; color:var(--text2); background:rgba(16,185,129,0.08); border-radius:8px; padding:10px 14px; border-left:3px solid var(--green); }
+.ai-price-targets { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:14px; }
+@media(max-width:900px) { .ai-price-targets { grid-template-columns:1fr 1fr; } }
+.ai-target-item { background:var(--bg2); border-radius:8px; padding:10px; text-align:center; }
+.ai-target-label { font-size:0.7rem; color:var(--text2); text-transform:uppercase; letter-spacing:.05em; }
+.ai-target-value { font-size:1rem; font-weight:700; margin-top:4px; }
+.ai-signal-row { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+.ai-signal-chip { padding:4px 12px; border-radius:20px; font-size:0.78rem; font-weight:600; }
+.ai-signal-chip.al { background:#064e3b; color:#34d399; }
+.ai-signal-chip.sat { background:#4a0a0a; color:#f87171; }
+.ai-signal-chip.bekle { background:#3a2a00; color:#fbbf24; }
+.monthly-return-badge { display:inline-flex; align-items:center; gap:8px; background:linear-gradient(135deg,#064e3b,#065f46); border:1px solid var(--green); border-radius:10px; padding:8px 16px; font-size:0.9rem; font-weight:700; color:#34d399; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="nav">
+  <div class="nav-brand">🥈 GMSTR <span>AI</span></div>
+  <div class="nav-tab active" onclick="showPage('dashboard')">📊 Dashboard</div>
+  <div class="nav-tab" onclick="showPage('chart')">📈 Grafik</div>
+  <div class="nav-tab" onclick="showPage('monitor')">🤖 AI Monitör</div>
+  <div class="nav-tab" onclick="showPage('news')">📰 Haber AI</div>
+  <div class="nav-tab" onclick="showPage('trades')">💼 İşlemlerim</div>
+  <div class="nav-tab" onclick="showPage('analysis')">💰 Analiz</div>
+  <div class="nav-tab" onclick="showPage('validation')">🔬 Model Doğrulama</div>
+  <div class="nav-right">
+    <div class="price-badge">
+      GMSTR: <span class="price-val" id="nav-price">Yükleniyor...</span>
+    </div>
+    <div class="status-dot" id="status-dot"></div>
+  </div>
+</nav>
+
+<!-- TOAST CONTAINER -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- ============================================================ -->
+<!-- DASHBOARD PAGE -->
+<!-- ============================================================ -->
+<div class="page active" id="page-dashboard">
+  <div class="section-header">
+    <div>
+      <div class="section-title">📊 GMSTR Dashboard</div>
+      <div class="section-sub" id="dash-time">Yükleniyor...</div>
+    </div>
+    <button class="refresh-btn" onclick="loadDashboard()">🔄 Yenile</button>
+  </div>
+
+  <!-- Üst Kartlar -->
+  <div class="grid-4" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-title">💰 Güncel Fiyat</div>
+      <div class="card-value" id="dash-price" style="color:var(--silver)">--</div>
+      <div class="card-sub" id="dash-price-src">Kaynak: --</div>
+    </div>
+    <div class="card">
+      <div class="card-title">🤖 AI Sinyali (1G)</div>
+      <div class="card-value" id="dash-signal-1d">--</div>
+      <div class="card-sub" id="dash-conf-1d">Güven: --</div>
+    </div>
+    <div class="card">
+      <div class="card-title">📰 Haber Sinyali</div>
+      <div class="card-value" id="dash-news-signal">--</div>
+      <div class="card-sub" id="dash-news-count">-- haber analiz edildi</div>
+    </div>
+    <div class="card">
+      <div class="card-title">💼 Toplam K/Z</div>
+      <div class="card-value" id="dash-total-pl">--</div>
+      <div class="card-sub" id="dash-win-rate">Kazanma: --</div>
+    </div>
+  </div>
+
+  <!-- Kombine Sinyal + Tahminler -->
+  <div class="grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-title">🎯 KOMBİNE AI + HABER SİNYALİ</div>
+      <div id="combined-signal-box">
+        <div class="loading"><div class="spinner"></div> Yükleniyor...</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📊 AI TAHMİNLERİ (Tüm Vadeler)</div>
+      <div id="dash-predictions">
+        <div class="loading"><div class="spinner"></div> Yükleniyor...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Piyasa Durumu + Açık Pozisyonlar -->
+  <div class="grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-title">🌍 PİYASA DURUMU</div>
+      <div id="market-context">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📌 AÇIK POZİSYONLAR</div>
+      <div id="dash-open-positions">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI YORUMU (tam genişlik) -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="section-header" style="margin-bottom:16px">
+      <div>
+        <div class="section-title">🧠 AI YORUM & STRATEJİ</div>
+        <div class="section-sub">Modellerin birleşik analizi: Al / Bekle / Sat önerisi</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-secondary btn-sm" id="telegram-send-btn" onclick="sendTelegramCommentary()" style="background:#1a3a5f;border-color:#2563eb;color:#60a5fa">
+          ✈️ Telegram'a Gönder
+        </button>
+        <button class="refresh-btn" onclick="loadAICommentary()">🔄 Yenile</button>
+      </div>
+    </div>
+    <div id="ai-commentary-box">
+      <div class="loading"><div class="spinner"></div> AI yorumu yükleniyor...</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- GRAFİK PAGE -->
+<!-- ============================================================ -->
+<div class="page" id="page-chart">
+  <div class="section-header">
+    <div>
+      <div class="section-title">📈 GMSTR Fiyat Grafiği & Tahmin</div>
+      <div class="section-sub">Geçmiş fiyat hareketi + AI tahmin gidişatı</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="chart-days" class="form-select" style="width:auto;padding:6px 12px;font-size:0.85rem" onchange="loadChart()">
+        <option value="1">Günlük (1G)</option>
+        <option value="7">Haftalık (7G)</option>
+        <option value="30">Aylık (30G)</option>
+        <option value="60">60 Günlük</option>
+        <option value="90" selected>90 Günlük</option>
+        <option value="365">1 Yıllık</option>
+      </select>
+      <button class="refresh-btn" onclick="loadChart()">🔄 Yenile</button>
+    </div>
+  </div>
+
+  <!-- Ana Grafik -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div class="card-title" style="margin:0">📊 GMSTR Fiyat + AI Tahmin Gidişatı</div>
+      <div style="display:flex;gap:16px;font-size:0.78rem;color:var(--text2)">
+        <span><span style="display:inline-block;width:20px;height:3px;background:#c0c0c0;vertical-align:middle;margin-right:4px"></span>Gerçek Fiyat</span>
+        <span><span style="display:inline-block;width:20px;height:3px;background:#3b82f6;border-top:2px dashed #3b82f6;vertical-align:middle;margin-right:4px"></span>AI Tahmin</span>
+        <span><span style="display:inline-block;width:20px;height:3px;background:rgba(59,130,246,0.2);vertical-align:middle;margin-right:4px"></span>Güven Aralığı</span>
+      </div>
+    </div>
+    <div style="position:relative;height:420px">
+      <canvas id="priceChart"></canvas>
+    </div>
+    <div id="chart-loading" class="loading" style="display:none"><div class="spinner"></div> Grafik yükleniyor...</div>
+  </div>
+
+  <!-- Tahmin Noktaları -->
+  <div class="grid-4" style="margin-bottom:16px" id="forecast-cards">
+    <!-- Dinamik olarak doldurulacak -->
+  </div>
+
+  <!-- Teknik Göstergeler + Grafik Bilgisi -->
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">📐 TEKNİK GÖSTERGELER</div>
+      <div id="chart-indicators">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">ℹ️ GRAFİK AÇIKLAMASI</div>
+      <div style="font-size:0.85rem;color:var(--text2);line-height:1.9">
+        <p>📊 <strong style="color:var(--text)">Gri çizgi:</strong> Gerçek GMSTR kapanış fiyatları</p>
+        <p>🔵 <strong style="color:var(--text)">Mavi nokta:</strong> AI tahmin noktaları (1G/3G/5G/10G)</p>
+        <p>🔷 <strong style="color:var(--text)">Mavi alan:</strong> Güven aralığı (±1 standart sapma)</p>
+        <p>📈 <strong style="color:var(--text)">Tahmin yöntemi:</strong> Olasılık × Ortalama günlük hareket</p>
+        <p>⚠️ <strong style="color:var(--yellow)">Uyarı:</strong> Tahminler kesin değil, yatırım tavsiyesi değildir</p>
+        <div class="sep"></div>
+        <p id="chart-last-update" style="color:var(--text2)">Son güncelleme: --</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- AI MONİTÖR PAGE -->
+<!-- ============================================================ -->
+<div class="page" id="page-monitor">
+  <div class="section-header">
+    <div>
+      <div class="section-title">🤖 AI Tahmin Monitörü</div>
+      <div class="section-sub">XGB + LGB + RF + GB + ET + MLP Ensemble Model</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="refresh-btn" onclick="loadPredictions()">🔄 Yenile</button>
+      <button class="btn btn-primary btn-sm" onclick="trainModel()">⚡ Modeli Eğit</button>
+    </div>
+  </div>
+
+  <!-- Saatlik Tahmin Kartları -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="section-header" style="margin-bottom:12px">
+      <div class="card-title" style="margin:0">⏱️ SAATLİK TAHMİNLER (1h / 4h)</div>
+      <span style="font-size:0.78rem;color:var(--text2)">Kısa vadeli momentum analizi</span>
+    </div>
+    <div class="pred-grid" id="pred-hourly">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <!-- Günlük Tahmin Kartları -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">📅 GÜNLÜK TAHMİNLER (1G / 3G / 5G / 10G)</div>
+    <div class="pred-grid" id="pred-daily">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <!-- Model Performansı -->
+  <div class="grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-title">📊 MODEL PERFORMANSI</div>
+      <div id="model-perf-table">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">💡 TAHMİN YORUMU</div>
+      <div id="pred-interpretation">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Eğitim Logu -->
+  <div class="card">
+    <div class="section-header" style="margin-bottom:12px">
+      <div class="card-title" style="margin:0">📋 EĞİTİM LOGU</div>
+      <button class="refresh-btn" onclick="loadTrainLog()">🔄 Logu Yenile</button>
+    </div>
+    <pre id="train-log" style="background:var(--bg2);border-radius:8px;padding:14px;font-size:0.75rem;color:var(--text2);max-height:300px;overflow-y:auto;white-space:pre-wrap">Henüz eğitim başlatılmadı.</pre>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- HABER AI PAGE -->
+<!-- ============================================================ -->
+<div class="page" id="page-news">
+  <div class="section-header">
+    <div>
+      <div class="section-title">📰 Haber Tabanlı AI Tahmin</div>
+      <div class="section-sub">Gümüş piyasasını etkileyen haberlerin AI analizi</div>
+    </div>
+    <button class="refresh-btn" onclick="refreshNews()">🔄 Haberleri Yenile</button>
+  </div>
+
+  <!-- Haber Sinyali + Kombine -->
+  <div class="grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-title">📊 HABER DUYGU ANALİZİ</div>
+      <div id="news-sentiment-box">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">🎯 AI + HABER KOMBİNE TAHMİN</div>
+      <div id="news-combined-box">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Haberler Listesi -->
+  <div class="card">
+    <div class="section-header" style="margin-bottom:12px">
+      <div class="card-title" style="margin:0">📰 GÜNCEL HABERLER</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span style="font-size:0.8rem;color:var(--text2)" id="news-update-time">--</span>
+      </div>
+    </div>
+    <div id="news-list">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- İŞLEMLERİM PAGE -->
+<!-- ============================================================ -->
+<div class="page" id="page-trades">
+  <div class="section-header">
+    <div>
+      <div class="section-title">💼 Alım/Satım İşlemlerim</div>
+      <div class="section-sub">GMSTR işlem geçmişi ve kayıt sistemi</div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="showTradeForm()">+ Yeni İşlem</button>
+  </div>
+
+  <!-- İşlem Formu -->
+  <div class="card" id="trade-form-card" style="margin-bottom:16px;display:none">
+    <div class="section-header" style="margin-bottom:16px">
+      <div class="card-title" style="margin:0">📝 YENİ İŞLEM EKLE</div>
+      <button class="btn btn-secondary btn-sm" onclick="hideTradeForm()">✕ Kapat</button>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">İşlem Tipi *</label>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-buy" id="btn-buy-type" onclick="setTradeType('BUY')" style="flex:1">📈 ALIM</button>
+          <button class="btn btn-secondary" id="btn-sell-type" onclick="setTradeType('SELL')" style="flex:1">📉 SATIM</button>
+        </div>
+        <input type="hidden" id="trade-type" value="BUY">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Bot Sinyali (opsiyonel)</label>
+        <input type="text" class="form-input" id="trade-bot-signal" placeholder="Örn: YUKARI ↑ %62.3">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">İşlem Tarihi *</label>
+        <input type="date" class="form-input" id="trade-date">
+      </div>
+      <div class="form-group">
+        <label class="form-label">İşlem Saati *</label>
+        <input type="time" class="form-input" id="trade-time">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Fiyat (TL) *</label>
+        <input type="number" class="form-input" id="trade-price" placeholder="Örn: 703.50" step="0.01" min="0">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Miktar (Lot/Adet) *</label>
+        <input type="number" class="form-input" id="trade-quantity" placeholder="Örn: 10" step="0.01" min="0">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Komisyon (TL) <span style="color:var(--text2);font-size:0.75rem">(%0.2 otomatik hesaplanır)</span></label>
+        <input type="number" class="form-input" id="trade-commission" placeholder="0" step="0.01" min="0" value="0" style="color:var(--yellow)">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Toplam Tutar</label>
+        <div class="form-input" id="trade-total" style="background:var(--bg2);color:var(--yellow)">--</div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Notlar</label>
+      <input type="text" class="form-input" id="trade-notes" placeholder="İşlem notu (opsiyonel)">
+    </div>
+
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-secondary" onclick="hideTradeForm()">İptal</button>
+      <button class="btn btn-primary" onclick="submitTrade()">💾 İşlemi Kaydet</button>
+    </div>
+  </div>
+
+  <!-- İşlem Tablosu -->
+  <div class="card">
+    <div class="section-header" style="margin-bottom:12px">
+      <div class="card-title" style="margin:0">📋 İŞLEM GEÇMİŞİ</div>
+      <span id="trade-count" style="font-size:0.82rem;color:var(--text2)">0 işlem</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Tip</th>
+            <th>Tarih</th>
+            <th>Saat</th>
+            <th>Fiyat</th>
+            <th>Miktar</th>
+            <th>Toplam</th>
+            <th>Komisyon</th>
+            <th>Bot Sinyali</th>
+            <th>Notlar</th>
+            <th>İşlem</th>
+          </tr>
+        </thead>
+        <tbody id="trades-tbody">
+          <tr><td colspan="11"><div class="loading"><div class="spinner"></div></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- ANALİZ PAGE -->
+<!-- ============================================================ -->
+<div class="page" id="page-analysis">
+  <div class="section-header">
+    <div>
+      <div class="section-title">📈 Kar/Zarar Analizi</div>
+      <div class="section-sub">İşlem performansı ve öneriler</div>
+    </div>
+    <button class="refresh-btn" onclick="loadAnalysis()">🔄 Yenile</button>
+  </div>
+
+  <!-- Özet Kartlar -->
+  <div class="grid-4" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-title">💰 Gerçekleşen K/Z</div>
+      <div class="card-value" id="an-realized-pl">--</div>
+      <div class="card-sub" id="an-realized-net">Net (komisyon dahil): --</div>
+    </div>
+    <div class="card">
+      <div class="card-title">🎯 Kazanma Oranı</div>
+      <div class="card-value" id="an-win-rate">--</div>
+      <div class="card-sub" id="an-win-detail">-- kazanan / -- kaybeden</div>
+    </div>
+    <div class="card">
+      <div class="card-title">⚖️ Profit Factor</div>
+      <div class="card-value" id="an-profit-factor">--</div>
+      <div class="card-sub">1.0 üzeri = karlı strateji</div>
+    </div>
+    <div class="card">
+      <div class="card-title">⏱️ Ort. Tutma Süresi</div>
+      <div class="card-value" id="an-holding">--</div>
+      <div class="card-sub">gün</div>
+    </div>
+  </div>
+
+  <!-- Detay + Öneriler -->
+  <div class="grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-title">📊 PERFORMANS DETAYI</div>
+      <div id="an-perf-detail">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">💡 AI ÖNERİLERİ</div>
+      <div id="an-recommendations">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Aylık Performans -->
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title">📅 AYLIK PERFORMANS (%15 Hedef)</div>
+    <div id="monthly-chart">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <!-- Kapalı Pozisyonlar -->
+  <div class="card">
+    <div class="card-title">📋 KAPALI POZİSYONLAR (Son 20)</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Açılış</th>
+            <th>Kapanış</th>
+            <th>Alış Fiyatı</th>
+            <th>Satış Fiyatı</th>
+            <th>Miktar</th>
+            <th>K/Z (TL)</th>
+            <th>K/Z (%)</th>
+            <th>Durum</th>
+          </tr>
+        </thead>
+        <tbody id="closed-positions-tbody">
+          <tr><td colspan="8"><div class="loading"><div class="spinner"></div></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- MODEL DOĞRULAMA PAGE -->
+<!-- ============================================================ -->
+<div class="page" id="page-validation">
+  <div class="section-header">
+    <div>
+      <div class="section-title">🔬 Model Doğrulama</div>
+      <div class="section-sub">AI modellerinin gerçekçilik ve performans kontrolü</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="refresh-btn" onclick="loadValidation()">🔄 Yenile</button>
+      <button class="btn btn-primary btn-sm" onclick="trainModel()">⚡ Yeniden Eğit</button>
+    </div>
+  </div>
+
+  <!-- Genel Durum -->
+  <div class="grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-title">🏆 GENEL MODEL DURUMU</div>
+      <div id="val-overall">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">🎯 AYLIK %15 HEDEFİ ANALİZİ</div>
+      <div id="val-monthly-target">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model Detayları -->
+  <div class="card">
+    <div class="card-title">📊 MODEL DETAYLARI</div>
+    <div id="val-models">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <!-- Gerçekçilik Notu -->
+  <div class="card" style="margin-top:16px">
+    <div class="card-title">ℹ️ GERÇEKÇİLİK NOTU</div>
+    <div style="font-size:0.85rem;color:var(--text2);line-height:1.8">
+      <p>• <strong style="color:var(--text)">Test Doğruluğu > %55:</strong> Model rastgele tahminden iyi çalışıyor</p>
+      <p>• <strong style="color:var(--text)">AUC > 0.55:</strong> Model ayırt edici güce sahip</p>
+      <p>• <strong style="color:var(--text)">CV-Test Farkı < %15:</strong> Overfit riski düşük</p>
+      <p>• <strong style="color:var(--text)">Aylık %15 Hedefi:</strong> Teorik olarak %55+ doğruluk + %1.5 günlük hareket ile mümkün, ancak gerçek piyasada komisyon, slippage ve piyasa koşulları etkiler</p>
+      <p>• <strong style="color:var(--yellow)">⚠️ Uyarı:</strong> Geçmiş performans gelecek getiriyi garanti etmez. Bot sinyallerini kendi analizinizle destekleyin.</p>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const API = 'http://localhost:5050';
+let currentTradeType = 'BUY';
+let priceChartInstance = null;
+
+// ============================================================
+// GRAFİK
+// ============================================================
+async function loadChart() {
+  const days = document.getElementById('chart-days')?.value || 90;
+  document.getElementById('chart-loading').style.display = 'flex';
+  
+  const data = await apiFetch(`/api/price-chart?days=${days}`);
+  
+  document.getElementById('chart-loading').style.display = 'none';
+  
+  if (!data.success) {
+    showToast('Grafik verisi yüklenemedi: ' + (data.error || ''), 'error');
+    return;
+  }
+  
+  renderPriceChart(data);
+  renderForecastCards(data.forecast);
+  renderChartIndicators(data.indicators, data.last_price);
+  
+  document.getElementById('chart-last-update').textContent = 
+    `Son güncelleme: ${new Date().toLocaleString('tr-TR')} | ${data.data_points} veri noktası`;
+}
+
+function renderPriceChart(data) {
+  const ctx = document.getElementById('priceChart').getContext('2d');
+  
+  // Mevcut grafiği yok et
+  if (priceChartInstance) {
+    priceChartInstance.destroy();
+    priceChartInstance = null;
+  }
+  
+  const historical = data.historical || [];
+  const forecast = data.forecast || [];
+  
+  // Geçmiş fiyat verileri
+  const histLabels = historical.map(h => h.date);
+  const histPrices = historical.map(h => h.price);
+  
+  // Son tarihi bul
+  const lastDate = data.last_date;
+  const lastPrice = data.last_price;
+  
+  // Tahmin noktaları - tarihe göre sırala
+  const sortedForecast = [...forecast].sort((a, b) => a.days_ahead - b.days_ahead);
+  
+  // Tahmin için labels ve data
+  const forecastLabels = sortedForecast.map(f => f.date);
+  const forecastPrices = sortedForecast.map(f => f.forecast_price);
+  const forecastUpper = sortedForecast.map(f => f.upper_bound);
+  const forecastLower = sortedForecast.map(f => f.lower_bound);
+  
+  // Tüm labels birleştir (son geçmiş noktası + tahmin noktaları)
+  const allLabels = [...histLabels, ...forecastLabels];
+  
+  // Geçmiş fiyat dizisi (tahmin noktaları için null)
+  const histData = [...histPrices, ...new Array(forecastLabels.length).fill(null)];
+  
+  // Tahmin dizisi (geçmiş için null, son noktadan başla)
+  const forecastData = [...new Array(histLabels.length - 1).fill(null), lastPrice, ...forecastPrices];
+  
+  // Üst sınır
+  const upperData = [...new Array(histLabels.length - 1).fill(null), lastPrice, ...forecastUpper];
+  
+  // Alt sınır
+  const lowerData = [...new Array(histLabels.length - 1).fill(null), lastPrice, ...forecastLower];
+  
+  // Renk belirleme (son tahmin yönüne göre)
+  const lastForecast = sortedForecast[sortedForecast.length - 1];
+  const forecastColor = lastForecast?.direction === 'UP' ? '#3b82f6' : '#f97316';
+  const forecastColorAlpha = lastForecast?.direction === 'UP' ? 'rgba(59,130,246,0.15)' : 'rgba(249,115,22,0.15)';
+  
+  priceChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: allLabels,
+      datasets: [
+        {
+          label: 'Gerçek Fiyat',
+          data: histData,
+          borderColor: '#c0c0c0',
+          backgroundColor: 'rgba(192,192,192,0.05)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          tension: 0.3,
+          fill: false,
+          order: 1,
+        },
+        {
+          label: 'AI Tahmin',
+          data: forecastData,
+          borderColor: forecastColor,
+          backgroundColor: 'transparent',
+          borderWidth: 2.5,
+          borderDash: [6, 3],
+          pointRadius: sortedForecast.map((_, i) => i === 0 ? 0 : 6),
+          pointBackgroundColor: forecastColor,
+          pointBorderColor: '#0a0e1a',
+          pointBorderWidth: 2,
+          tension: 0.2,
+          fill: false,
+          order: 2,
+        },
+        {
+          label: 'Üst Sınır',
+          data: upperData,
+          borderColor: 'transparent',
+          backgroundColor: forecastColorAlpha,
+          borderWidth: 0,
+          pointRadius: 0,
+          tension: 0.2,
+          fill: '+1',
+          order: 3,
+        },
+        {
+          label: 'Alt Sınır',
+          data: lowerData,
+          borderColor: 'transparent',
+          backgroundColor: forecastColorAlpha,
+          borderWidth: 0,
+          pointRadius: 0,
+          tension: 0.2,
+          fill: false,
+          order: 4,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false,
+      },
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          labels: {
+            color: '#94a3b8',
+            font: { size: 11 },
+            filter: (item) => item.text !== 'Üst Sınır' && item.text !== 'Alt Sınır',
+            usePointStyle: true,
+          }
+        },
+        tooltip: {
+          backgroundColor: '#1e2d45',
+          borderColor: '#2a3f5f',
+          borderWidth: 1,
+          titleColor: '#e2e8f0',
+          bodyColor: '#94a3b8',
+          callbacks: {
+            label: (ctx) => {
+              if (ctx.raw === null) return null;
+              const label = ctx.dataset.label;
+              if (label === 'Üst Sınır' || label === 'Alt Sınır') return null;
+              return `${label}: ${ctx.raw.toFixed(2)} ₺`;
+            },
+            afterBody: (items) => {
+              const dateIdx = items[0]?.dataIndex;
+              if (dateIdx === undefined) return [];
+              
+              // Tahmin noktası mı?
+              const forecastIdx = dateIdx - histLabels.length;
+              if (forecastIdx >= 0 && forecastIdx < sortedForecast.length) {
+                const f = sortedForecast[forecastIdx];
+                return [
+                  `Yön: ${f.direction === 'UP' ? '↑ YUKARI' : '↓ AŞAĞI'}`,
+                  `Olasılık: %${(f.prob_up * 100).toFixed(1)}`,
+                  `Güven: %${(f.confidence * 100).toFixed(1)}`,
+                  `Aralık: ${f.lower_bound.toFixed(2)} - ${f.upper_bound.toFixed(2)} ₺`,
+                ];
+              }
+              return [];
+            }
+          }
+        },
+        annotation: {
+          annotations: {
+            lastPriceLine: {
+              type: 'line',
+              xMin: histLabels.length - 1,
+              xMax: histLabels.length - 1,
+              borderColor: 'rgba(192,192,192,0.4)',
+              borderWidth: 1,
+              borderDash: [4, 4],
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(42,63,95,0.5)', drawBorder: false },
+          ticks: {
+            color: '#94a3b8',
+            font: { size: 10 },
+            maxTicksLimit: 12,
+            maxRotation: 0,
+          }
+        },
+        y: {
+          grid: { color: 'rgba(42,63,95,0.5)', drawBorder: false },
+          ticks: {
+            color: '#94a3b8',
+            font: { size: 10 },
+            callback: (val) => val.toFixed(0) + ' ₺'
+          },
+          position: 'right',
+        }
+      }
+    }
+  });
+}
+
+function renderForecastCards(forecast) {
+  if (!forecast || forecast.length === 0) {
+    document.getElementById('forecast-cards').innerHTML = '';
+    return;
+  }
+  
+  const sorted = [...forecast].sort((a, b) => a.days_ahead - b.days_ahead);
+  const labels = {1: '1 Gün', 3: '3 Gün', 5: '5 Gün', 10: '10 Gün'};
+  
+  let html = '';
+  for (const f of sorted) {
+    const isUp = f.direction === 'UP';
+    const color = isUp ? '#10b981' : '#ef4444';
+    const bgColor = isUp ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)';
+    const arrow = isUp ? '↑' : '↓';
+    const probPct = (f.prob_up * 100).toFixed(1);
+    const confPct = (f.confidence * 100).toFixed(1);
+    const priceDiff = f.forecast_price - (forecast[0]?.forecast_price || f.forecast_price);
+    
+    html += `
+      <div class="card" style="border-color:${color}40;background:${bgColor};text-align:center">
+        <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;margin-bottom:8px">
+          ${labels[f.days_ahead] || f.days_ahead + ' Gün'} Sonrası
+        </div>
+        <div style="font-size:2rem;font-weight:800;color:${color}">${arrow}</div>
+        <div style="font-size:1.2rem;font-weight:700;color:${color};margin:4px 0">
+          ${f.forecast_price.toFixed(2)} ₺
+        </div>
+        <div style="font-size:0.78rem;color:#94a3b8">
+          ↑ %${probPct} olasılık
+        </div>
+        <div style="font-size:0.78rem;color:#94a3b8;margin-top:2px">
+          Güven: %${confPct}
+        </div>
+        <div style="font-size:0.72rem;color:#94a3b8;margin-top:4px">
+          ${f.lower_bound.toFixed(2)} - ${f.upper_bound.toFixed(2)} ₺
+        </div>
+        <div style="font-size:0.7rem;color:#94a3b8;margin-top:4px">📅 ${f.date}</div>
+      </div>
+    `;
+  }
+  document.getElementById('forecast-cards').innerHTML = html;
+}
+
+function renderChartIndicators(indicators, lastPrice) {
+  if (!indicators || Object.keys(indicators).length === 0) {
+    document.getElementById('chart-indicators').innerHTML = '<div class="empty-state"><p>Teknik gösterge verisi yok</p></div>';
+    return;
+  }
+  
+  const names = {
+    'ma_5': 'MA 5', 'ma_10': 'MA 10', 'ma_20': 'MA 20', 'ma_50': 'MA 50',
+    'rsi_14': 'RSI 14',
+    'bb_upper': 'BB Üst', 'bb_mid': 'BB Orta', 'bb_lower': 'BB Alt',
+  };
+  
+  let html = '';
+  
+  // RSI özel gösterim
+  if (indicators.rsi_14) {
+    const rsi = indicators.rsi_14;
+    const rsiColor = rsi > 70 ? '#ef4444' : rsi < 30 ? '#10b981' : '#94a3b8';
+    const rsiStatus = rsi > 70 ? 'Aşırı Alım' : rsi < 30 ? 'Aşırı Satım' : 'Normal';
+    html += `
+      <div class="stat-row">
+        <span class="stat-label">RSI (14)</span>
+        <span class="stat-value" style="color:${rsiColor}">${rsi.toFixed(1)} - ${rsiStatus}</span>
+      </div>
+    `;
+  }
+  
+  // MA'lar
+  for (const [key, val] of Object.entries(indicators)) {
+    if (!key.startsWith('ma_')) continue;
+    const name = names[key] || key;
+    const isAbove = lastPrice > val;
+    const color = isAbove ? '#10b981' : '#ef4444';
+    const status = isAbove ? '↑ Üzerinde' : '↓ Altında';
+    html += `
+      <div class="stat-row">
+        <span class="stat-label">${name}</span>
+        <span class="stat-value">${val.toFixed(2)} ₺ <span style="color:${color};font-size:0.78rem">${status}</span></span>
+      </div>
+    `;
+  }
+  
+  // Bollinger Bands
+  if (indicators.bb_upper && indicators.bb_lower) {
+    const bbWidth = ((indicators.bb_upper - indicators.bb_lower) / indicators.bb_mid * 100).toFixed(1);
+    const bbPos = lastPrice > indicators.bb_upper ? 'Üst Bandın Üzerinde' :
+                  lastPrice < indicators.bb_lower ? 'Alt Bandın Altında' : 'Band İçinde';
+    const bbColor = lastPrice > indicators.bb_upper ? '#ef4444' : 
+                    lastPrice < indicators.bb_lower ? '#10b981' : '#94a3b8';
+    html += `
+      <div class="stat-row">
+        <span class="stat-label">Bollinger Bands</span>
+        <span class="stat-value" style="color:${bbColor}">${bbPos}</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">BB Genişliği</span>
+        <span class="stat-value">%${bbWidth}</span>
+      </div>
+    `;
+  }
+  
+  document.getElementById('chart-indicators').innerHTML = html || '<div class="empty-state"><p>Gösterge yok</p></div>';
+}
+
+// ============================================================
+// NAVIGATION
+// ============================================================
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  event.target.classList.add('active');
+  
+  // Sayfa yükle
+  if (name === 'dashboard') loadDashboard();
+  else if (name === 'monitor') loadPredictions();
+  else if (name === 'news') loadNews();
+  else if (name === 'trades') loadTrades();
+  else if (name === 'analysis') loadAnalysis();
+  else if (name === 'validation') loadValidation();
+}
+
+// ============================================================
+// TOAST
+// ============================================================
+function showToast(msg, type='info') {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.innerHTML = `<span>${type==='success'?'✅':type==='error'?'❌':'ℹ️'}</span><span>${msg}</span>`;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+// ============================================================
+// API HELPER
+// ============================================================
+async function apiFetch(endpoint, options={}) {
+  try {
+    const res = await fetch(API + endpoint, options);
+    return await res.json();
+  } catch(e) {
+    console.error('API Error:', e);
+    return { success: false, error: e.message };
+  }
+}
+
+// ============================================================
+// DASHBOARD
+// ============================================================
+async function loadDashboard() {
+  const data = await apiFetch('/api/dashboard');
+  if (!data.success) { showToast('Dashboard yüklenemedi: ' + data.error, 'error'); return; }
+  
+  // Fiyat
+  const price = data.price?.price;
+  document.getElementById('nav-price').textContent = price ? price.toFixed(2) + ' ₺' : '--';
+  document.getElementById('dash-price').textContent = price ? price.toFixed(2) + ' ₺' : '--';
+  document.getElementById('dash-price-src').textContent = 'Kaynak: ' + (data.price?.source || '--');
+  document.getElementById('dash-time').textContent = 'Son güncelleme: ' + (data.timestamp || '--');
+  
+  // AI Sinyali 1d
+  const pred1d = data.predictions?.['1d_daily'];
+  if (pred1d) {
+    const dir = pred1d.direction || '--';
+    const conf = ((pred1d.confidence || 0) * 100).toFixed(1);
+    document.getElementById('dash-signal-1d').textContent = dir;
+    document.getElementById('dash-signal-1d').style.color = dir.includes('↑') ? 'var(--green)' : 'var(--red)';
+    document.getElementById('dash-conf-1d').textContent = `Güven: %${conf} | ${pred1d.signal_strength || ''}`;
+  }
+  
+  // Haber Sinyali
+  const ns = data.news_sentiment;
+  if (ns) {
+    document.getElementById('dash-news-signal').textContent = ns.signal || '--';
+    document.getElementById('dash-news-signal').style.color = 
+      ns.signal_color === 'green' ? 'var(--green)' : 
+      ns.signal_color === 'red' ? 'var(--red)' : 
+      ns.signal_color === 'orange' ? 'var(--orange)' : 'var(--yellow)';
+    document.getElementById('dash-news-count').textContent = `${data.news_count || 0} haber analiz edildi`;
+  }
+  
+  // K/Z
+  const perf = data.performance;
+  if (perf) {
+    const pl = data.trade_summary?.realized_pl || 0;
+    const plEl = document.getElementById('dash-total-pl');
+    plEl.textContent = (pl >= 0 ? '+' : '') + pl.toFixed(2) + ' ₺';
+    plEl.style.color = pl >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('dash-win-rate').textContent = `Kazanma: %${perf.win_rate || 0}`;
+  }
+  
+  // Kombine Sinyal
+  renderCombinedSignal(data.combined_signal);
+  
+  // Tahminler
+  renderDashPredictions(data.predictions);
+  
+  // Piyasa Durumu
+  renderMarketContext(data.market_context);
+  
+  // Açık Pozisyonlar
+  renderOpenPositions(data.open_positions);
+  
+  // AI Yorumu (arka planda yükle)
+  loadAICommentary();
+}
+
+function renderCombinedSignal(cs) {
+  if (!cs) { document.getElementById('combined-signal-box').innerHTML = '<div class="empty-state"><p>Veri yok</p></div>'; return; }
+  
+  const colorMap = {
+    'strong-buy': 'var(--green)', 'buy': '#34d399',
+    'hold': 'var(--text2)', 'sell': 'var(--orange)', 'strong-sell': 'var(--red)'
+  };
+  const color = colorMap[cs.signal_class] || 'var(--text)';
+  
+  document.getElementById('combined-signal-box').innerHTML = `
+    <div style="text-align:center;padding:10px">
+      <div style="font-size:2.2rem;font-weight:800;color:${color}">${cs.final_signal || '--'}</div>
+      <div style="font-size:1rem;color:var(--text2);margin:6px 0">${cs.action || ''}</div>
+      <div style="font-size:0.85rem;color:var(--text2)">${cs.ai_news_alignment || ''}</div>
+      <div class="sep"></div>
+      <div class="combined-meta">
+        <div class="combined-meta-item">
+          <div class="combined-meta-label">Kombine Güven</div>
+          <div class="combined-meta-value" style="color:${color}">%${(cs.combined_confidence || 0).toFixed(1)}</div>
+        </div>
+        <div class="combined-meta-item">
+          <div class="combined-meta-label">AI Katkısı</div>
+          <div class="combined-meta-value">${(cs.ai_contribution || 0).toFixed(3)}</div>
+        </div>
+        <div class="combined-meta-item">
+          <div class="combined-meta-label">Haber Katkısı</div>
+          <div class="combined-meta-value">${(cs.news_contribution || 0).toFixed(3)}</div>
+        </div>
+        <div class="combined-meta-item">
+          <div class="combined-meta-label">Güncelleme</div>
+          <div class="combined-meta-value" style="font-size:0.75rem">${(cs.timestamp || '').split(' ')[1] || '--'}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderDashPredictions(preds) {
+  if (!preds || Object.keys(preds).length === 0) {
+    document.getElementById('dash-predictions').innerHTML = '<div class="empty-state"><div class="empty-icon">🤖</div><p>Tahmin yok. Modeli eğitin.</p></div>';
+    return;
+  }
+  
+  const horizons = ['1d_daily', '3d_daily', '5d_daily', '10d_daily'];
+  const labels = {'1d_daily':'1 Gün', '3d_daily':'3 Gün', '5d_daily':'5 Gün', '10d_daily':'10 Gün'};
+  
+  let html = '<div class="pred-grid">';
+  for (const key of horizons) {
+    const p = preds[key];
+    if (!p) continue;
+    const isUp = p.direction?.includes('↑');
+    const color = isUp ? 'var(--green)' : 'var(--red)';
+    const probUp = ((p.prob_up || 0) * 100).toFixed(1);
+    const probDown = ((p.prob_down || 0) * 100).toFixed(1);
+    const conf = ((p.confidence || 0) * 100).toFixed(1);
+    const chg = p.expected_change_pct?.toFixed(2) || '0';
+    
+    html += `
+      <div class="pred-card">
+        <div class="horizon">${labels[key] || key}</div>
+        <div class="direction" style="color:${color}">${p.direction || '--'}</div>
+        <div class="prob-bar"><div class="prob-fill" style="width:${probUp}%;background:${color}"></div></div>
+        <div class="prob-text">↑ %${probUp} | ↓ %${probDown}</div>
+        <div class="confidence" style="color:${color}">Güven: %${conf}</div>
+        <div style="font-size:0.75rem;color:var(--text2);margin-top:4px">Beklenen: ${chg > 0 ? '+' : ''}${chg}%</div>
+        <div style="font-size:0.72rem;color:var(--text2)">${p.signal_strength || ''}</div>
+      </div>
+    `;
+  }
+  html += '</div>';
+  document.getElementById('dash-predictions').innerHTML = html;
+}
+
+function renderMarketContext(ctx) {
+  if (!ctx) return;
+  document.getElementById('market-context').innerHTML = `
+    <div class="stat-row">
+      <span class="stat-label">Piyasa Durumu</span>
+      <span class="stat-value">${ctx.market_status || '--'}</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Tarih/Saat</span>
+      <span class="stat-value">${ctx.weekday || ''} ${ctx.current_date || ''} ${ctx.current_time || ''}</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Durum Notu</span>
+      <span class="stat-value" style="font-size:0.82rem;color:var(--text2)">${ctx.market_note || '--'}</span>
+    </div>
+    ${ctx.seasonal_note ? `<div class="stat-row"><span class="stat-label">Mevsimsel</span><span class="stat-value" style="font-size:0.82rem;color:var(--cyan)">${ctx.seasonal_note}</span></div>` : ''}
+  `;
+}
+
+function renderOpenPositions(count) {
+  const el = document.getElementById('dash-open-positions');
+  if (!count || count === 0) {
+    el.innerHTML = '<div class="empty-state"><div class="empty-icon">📌</div><p>Açık pozisyon yok</p></div>';
+  } else {
+    el.innerHTML = `
+      <div style="text-align:center;padding:20px">
+        <div style="font-size:3rem;font-weight:800;color:var(--accent)">${count}</div>
+        <div style="color:var(--text2);margin-top:8px">Açık Pozisyon</div>
+        <button class="btn btn-secondary btn-sm" style="margin-top:12px" onclick="showPage('analysis')">Detayları Gör →</button>
+      </div>
+    `;
+  }
+}
+
+// ============================================================
+// AI MONİTÖR
+// ============================================================
+async function loadPredictions() {
+  const data = await apiFetch('/api/predictions');
+  if (!data.success) { showToast('Tahminler yüklenemedi', 'error'); return; }
+  
+  // Saatlik tahminler
+  renderHourlyPredCards(data.predictions);
+  
+  // Günlük tahminler
+  renderPredCards(data.predictions, 'pred-daily');
+  
+  // Model performansı
+  renderModelPerf(data.model_quality);
+  
+  // Yorum
+  renderPredInterpretation(data.predictions);
+}
+
+function renderHourlyPredCards(preds) {
+  const container = document.getElementById('pred-hourly');
+  if (!preds) { container.innerHTML = '<div class="empty-state"><div class="empty-icon">⏱️</div><p>Saatlik tahmin yok. Saatlik modeli eğitin.</p></div>'; return; }
+  
+  const hourlyKeys = ['1h_hourly', '4h_hourly'];
+  const hourlyLabels = {'1h_hourly':'1 Saatlik', '4h_hourly':'4 Saatlik'};
+  
+  const available = hourlyKeys.filter(k => preds[k]);
+  
+  if (available.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state" style="grid-column:1/-1">
+        <div class="empty-icon">⏱️</div>
+        <p>Saatlik model henüz eğitilmedi.</p>
+        <p style="font-size:0.8rem;margin-top:8px;color:var(--text2)">Eğitmek için: <code style="background:var(--bg2);padding:2px 6px;border-radius:4px">python retrain_hourly_models.py</code></p>
+      </div>
+    `;
+    return;
+  }
+  
+  let html = '<div class="pred-grid" style="grid-template-columns:repeat(2,1fr)">';
+  for (const key of hourlyKeys) {
+    const p = preds[key];
+    if (!p) continue;
+    const isUp = p.direction?.includes('↑');
+    const color = isUp ? 'var(--green)' : 'var(--red)';
+    const probUp = ((p.prob_up || 0) * 100).toFixed(1);
+    const probDown = ((p.prob_down || 0) * 100).toFixed(1);
+    const conf = ((p.confidence || 0) * 100).toFixed(1);
+    const price = p.current_price?.toFixed(2) || '--';
+    const predPrice = p.predicted_price?.toFixed(2) || '--';
+    const chg = p.expected_change_pct?.toFixed(2) || '0';
+    const strength = p.signal_strength || '';
+    const strengthColor = strength === 'GÜÇLÜ' ? '#34d399' : strength === 'ZAYIF' ? 'var(--yellow)' : 'var(--text2)';
+    
+    // Güven gösterimi: confidence_pct varsa onu kullan (50-100 arası normalize), yoksa conf
+    const confDisplay = p.confidence_pct !== undefined ? p.confidence_pct.toFixed(1) : conf;
+    const confBarWidth = p.confidence_pct !== undefined ? p.confidence_pct : parseFloat(conf);
+    
+    html += `
+      <div class="pred-card" style="border-color:${color}40;border-left:3px solid ${color}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div class="horizon" style="font-size:0.85rem;font-weight:700;color:var(--text)">⏱️ ${hourlyLabels[key] || key}</div>
+          <span style="font-size:0.72rem;background:var(--bg2);padding:2px 8px;border-radius:10px;color:var(--text2)">Saatlik</span>
+        </div>
+        <div class="direction" style="color:${color};font-size:1.5rem;margin:6px 0">${p.direction || '--'}</div>
+        <div class="prob-bar"><div class="prob-fill" style="width:${probUp}%;background:${color}"></div></div>
+        <div class="prob-text">↑ %${probUp} | ↓ %${probDown}</div>
+        <div style="margin:8px 0;padding:6px;background:var(--bg2);border-radius:6px">
+          <div style="font-size:0.75rem;color:var(--text2)">Mevcut: ${price} ₺</div>
+          <div style="font-size:0.75rem;color:${color}">Hedef: ${predPrice} ₺ (${parseFloat(chg) > 0 ? '+' : ''}${chg}%)</div>
+        </div>
+        <div style="margin:6px 0">
+          <div style="display:flex;justify-content:space-between;font-size:0.75rem;margin-bottom:3px">
+            <span style="color:var(--text2)">Yön Güveni</span>
+            <span style="color:${color};font-weight:700">%${confDisplay}</span>
+          </div>
+          <div style="height:4px;background:var(--bg2);border-radius:2px;overflow:hidden">
+            <div style="height:100%;width:${confBarWidth}%;background:${color};border-radius:2px"></div>
+          </div>
+        </div>
+        <div style="font-size:0.78rem;color:${strengthColor};margin-top:4px;font-weight:600">${strength}</div>
+        <div style="font-size:0.7rem;color:var(--text2);margin-top:4px">${(p.date || '').split(' ')[1] || ''}</div>
+      </div>
+    `;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderPredCards(preds, containerId) {
+  if (!preds || Object.keys(preds).length === 0) {
+    document.getElementById(containerId).innerHTML = '<div class="empty-state"><div class="empty-icon">🤖</div><p>Tahmin bulunamadı. Modeli eğitin.</p></div>';
+    return;
+  }
+  
+  const horizons = ['1d_daily', '3d_daily', '5d_daily', '10d_daily'];
+  const labels = {'1d_daily':'1 Günlük', '3d_daily':'3 Günlük', '5d_daily':'5 Günlük', '10d_daily':'10 Günlük'};
+  
+  let html = '<div class="pred-grid">';
+  for (const key of horizons) {
+    const p = preds[key];
+    if (!p) continue;
+    const isUp = p.direction?.includes('↑');
+    const color = isUp ? 'var(--green)' : 'var(--red)';
+    const probUp = ((p.prob_up || 0) * 100).toFixed(1);
+    const probDown = ((p.prob_down || 0) * 100).toFixed(1);
+    const conf = ((p.confidence || 0) * 100).toFixed(1);
+    const price = p.current_price?.toFixed(2) || '--';
+    const predPrice = p.predicted_price?.toFixed(2) || '--';
+    const chg = p.expected_change_pct?.toFixed(2) || '0';
+    const strength = p.signal_strength || '';
+    
+    const strengthColor = strength === 'ÇOK GÜÇLÜ' ? 'var(--green)' :
+                          strength === 'GÜÇLÜ' ? '#34d399' :
+                          strength === 'ORTA' ? 'var(--yellow)' : 'var(--text2)';
+    
+    html += `
+      <div class="pred-card" style="border-color:${color}40">
+        <div class="horizon">${labels[key] || key}</div>
+        <div class="direction" style="color:${color};font-size:1.3rem">${p.direction || '--'}</div>
+        <div class="prob-bar"><div class="prob-fill" style="width:${probUp}%;background:${color}"></div></div>
+        <div class="prob-text">↑ %${probUp} | ↓ %${probDown}</div>
+        <div style="margin:8px 0;padding:6px;background:var(--bg2);border-radius:6px">
+          <div style="font-size:0.75rem;color:var(--text2)">Mevcut: ${price} ₺</div>
+          <div style="font-size:0.75rem;color:${color}">Hedef: ${predPrice} ₺ (${chg > 0 ? '+' : ''}${chg}%)</div>
+        </div>
+        <div class="confidence" style="color:${color}">Güven: %${conf}</div>
+        <div style="font-size:0.78rem;color:${strengthColor};margin-top:4px;font-weight:600">${strength}</div>
+        <div style="font-size:0.7rem;color:var(--text2);margin-top:4px">${(p.date || '').split(' ')[0] || ''}</div>
+      </div>
+    `;
+  }
+  html += '</div>';
+  document.getElementById(containerId).innerHTML = html;
+}
+
+function renderModelPerf(quality) {
+  if (!quality || Object.keys(quality).length === 0) {
+    document.getElementById('model-perf-table').innerHTML = '<div class="empty-state"><p>Model verisi yok</p></div>';
+    return;
+  }
+  
+  let html = '<table><thead><tr><th>Model</th><th>CV Acc</th><th>Test Acc</th><th>AUC</th><th>Durum</th></tr></thead><tbody>';
+  for (const [key, q] of Object.entries(quality)) {
+    const isReliable = q.is_reliable;
+    const testAcc = ((q.test_accuracy || 0) * 100).toFixed(1);
+    const cvAcc = ((q.cv_accuracy || 0) * 100).toFixed(1);
+    const auc = (q.test_auc || 0).toFixed(3);
+    html += `
+      <tr>
+        <td style="font-weight:600">${key}</td>
+        <td>%${cvAcc}</td>
+        <td style="color:${isReliable ? 'var(--green)' : 'var(--yellow)'}">%${testAcc}</td>
+        <td>${auc}</td>
+        <td><span class="badge ${isReliable ? 'badge-buy' : 'badge-sell'}">${isReliable ? '✅ Güvenilir' : '⚠️ Zayıf'}</span></td>
+      </tr>
+    `;
+  }
+  html += '</tbody></table>';
+  document.getElementById('model-perf-table').innerHTML = html;
+}
+
+function renderPredInterpretation(preds) {
+  if (!preds) return;
+  
+  const pred1d = preds['1d_daily'];
+  const pred5d = preds['5d_daily'];
+  const pred10d = preds['10d_daily'];
+  
+  let html = '';
+  
+  if (pred1d) {
+    const conf = ((pred1d.confidence || 0) * 100).toFixed(1);
+    const isUp = pred1d.direction?.includes('↑');
+    const color = isUp ? 'var(--green)' : 'var(--red)';
+    
+    html += `
+      <div class="stat-row">
+        <span class="stat-label">Kısa Vade (1G)</span>
+        <span class="stat-value" style="color:${color}">${pred1d.direction} (%${conf})</span>
+      </div>
+    `;
+    
+    if (parseFloat(conf) >= 65) {
+      html += `<div class="alert alert-success" style="margin:8px 0"><div class="alert-icon">✅</div><div><div class="alert-title">Güçlü Sinyal</div><div class="alert-text">%${conf} güven ile ${isUp ? 'alım' : 'satım'} sinyali. İşlem yapılabilir.</div></div></div>`;
+    } else if (parseFloat(conf) >= 55) {
+      html += `<div class="alert alert-warning" style="margin:8px 0"><div class="alert-icon">⚠️</div><div><div class="alert-title">Orta Sinyal</div><div class="alert-text">%${conf} güven - dikkatli olun, ek onay bekleyin.</div></div></div>`;
+    } else {
+      html += `<div class="alert alert-info" style="margin:8px 0"><div class="alert-icon">ℹ️</div><div><div class="alert-title">Zayıf Sinyal</div><div class="alert-text">%${conf} güven - işlem yapmayın, bekleyin.</div></div></div>`;
+    }
+  }
+  
+  // Trend uyumu
+  if (pred1d && pred5d && pred10d) {
+    const dirs = [pred1d, pred5d, pred10d].map(p => p.direction?.includes('↑') ? 1 : -1);
+    const sum = dirs.reduce((a,b) => a+b, 0);
+    if (sum === 3) {
+      html += `<div class="alert alert-success" style="margin:8px 0"><div class="alert-icon">🚀</div><div><div class="alert-title">Tüm Vadeler Uyumlu</div><div class="alert-text">1G, 5G ve 10G tahminleri hepsi YUKARI - güçlü yükseliş trendi.</div></div></div>`;
+    } else if (sum === -3) {
+      html += `<div class="alert alert-danger" style="margin:8px 0"><div class="alert-icon">📉</div><div><div class="alert-title">Tüm Vadeler Aşağı</div><div class="alert-text">1G, 5G ve 10G tahminleri hepsi AŞAĞI - güçlü düşüş trendi.</div></div></div>`;
+    } else {
+      html += `<div class="alert alert-warning" style="margin:8px 0"><div class="alert-icon">⚠️</div><div><div class="alert-title">Karma Sinyaller</div><div class="alert-text">Farklı vadeler farklı yönler gösteriyor. Dikkatli olun.</div></div></div>`;
+    }
+  }
+  
+  document.getElementById('pred-interpretation').innerHTML = html || '<div class="empty-state"><p>Tahmin verisi yok</p></div>';
+}
+
+async function trainModel() {
+  if (!confirm('Model eğitimi başlatılsın mı? Bu işlem 5-10 dakika sürebilir.')) return;
+  
+  showToast('Model eğitimi başlatıldı...', 'info');
+  const data = await apiFetch('/api/train', { method: 'POST' });
+  
+  if (data.success) {
+    showToast('Eğitim başlatıldı! Log için "Eğitim Logu" bölümünü kontrol edin.', 'success');
+    setTimeout(loadTrainLog, 5000);
+  } else {
+    showToast('Eğitim başlatılamadı: ' + data.error, 'error');
+  }
+}
+
+async function loadTrainLog() {
+  const data = await apiFetch('/api/train/log');
+  if (data.success) {
+    document.getElementById('train-log').textContent = data.log || 'Log boş.';
+  }
+}
+
+// ============================================================
+// HABER AI
+// ============================================================
+async function loadNews() {
+  const data = await apiFetch('/api/news');
+  if (!data.success) { showToast('Haberler yüklenemedi', 'error'); return; }
+  
+  renderNewsSentiment(data.sentiment);
+  renderNewsCombined(data.combined_prediction);
+  renderNewsList(data.news);
+  
+  document.getElementById('news-update-time').textContent = 
+    'Güncelleme: ' + new Date().toLocaleTimeString('tr-TR');
+}
+
+function renderNewsSentiment(s) {
+  if (!s) return;
+  
+  const colorMap = {
+    'green': 'var(--green)', 'lightgreen': '#34d399',
+    'red': 'var(--red)', 'orange': 'var(--orange)', 'gray': 'var(--text2)'
+  };
+  const color = colorMap[s.signal_color] || 'var(--text)';
+  
+  document.getElementById('news-sentiment-box').innerHTML = `
+    <div style="text-align:center;margin-bottom:16px">
+      <div style="font-size:1.8rem;font-weight:800;color:${color}">${s.direction || '--'}</div>
+      <div style="font-size:1rem;color:${color};margin:4px 0">${s.signal || '--'}</div>
+    </div>
+    <div class="conf-meter" style="margin-bottom:12px">
+      <span style="font-size:0.8rem;color:var(--text2);min-width:60px">Güven</span>
+      <div class="conf-bar"><div class="conf-fill" style="width:${s.confidence || 0}%;background:${color}"></div></div>
+      <span class="conf-val" style="color:${color}">%${(s.confidence || 0).toFixed(1)}</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">✅ Pozitif Haber</span>
+      <span class="stat-value" style="color:var(--green)">${s.positive_count || 0}</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">❌ Negatif Haber</span>
+      <span class="stat-value" style="color:var(--red)">${s.negative_count || 0}</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">⚪ Nötr Haber</span>
+      <span class="stat-value">${s.neutral_count || 0}</span>
+    </div>
+    <div class="sep"></div>
+    <div style="font-size:0.82rem;color:var(--text2)">${s.explanation || ''}</div>
+  `;
+}
+
+function renderNewsCombined(cs) {
+  if (!cs) return;
+  
+  const colorMap = {
+    'strong-buy': 'var(--green)', 'buy': '#34d399',
+    'hold': 'var(--text2)', 'sell': 'var(--orange)', 'strong-sell': 'var(--red)'
+  };
+  const color = colorMap[cs.signal_class] || 'var(--text)';
+  
+  document.getElementById('news-combined-box').innerHTML = `
+    <div style="text-align:center;margin-bottom:16px">
+      <div style="font-size:1.8rem;font-weight:800;color:${color}">${cs.final_signal || '--'}</div>
+      <div style="font-size:1rem;color:var(--text2);margin:4px 0">${cs.action || ''}</div>
+      <div style="font-size:0.85rem;margin-top:6px">${cs.ai_news_alignment || ''}</div>
+    </div>
+    <div class="conf-meter" style="margin-bottom:12px">
+      <span style="font-size:0.8rem;color:var(--text2);min-width:60px">Güven</span>
+      <div class="conf-bar"><div class="conf-fill" style="width:${cs.combined_confidence || 0}%;background:${color}"></div></div>
+      <span class="conf-val" style="color:${color}">%${(cs.combined_confidence || 0).toFixed(1)}</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">AI Katkısı (%60)</span>
+      <span class="stat-value">${(cs.ai_contribution || 0).toFixed(3)}</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Haber Katkısı (%40)</span>
+      <span class="stat-value">${(cs.news_contribution || 0).toFixed(3)}</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Kombine Skor</span>
+      <span class="stat-value" style="color:${color}">${(cs.combined_score || 0).toFixed(3)}</span>
+    </div>
+  `;
+}
+
+function renderNewsList(news) {
+  if (!news || news.length === 0) {
+    document.getElementById('news-list').innerHTML = '<div class="empty-state"><div class="empty-icon">📰</div><p>Haber bulunamadı</p></div>';
+    return;
+  }
+  
+  let html = '';
+  for (const n of news) {
+    const impactColor = n.sentiment === 'positive' ? 'positive' : n.sentiment === 'negative' ? 'negative' : 'neutral';
+    const impactText = n.impact > 0 ? `+${n.impact.toFixed(1)}` : n.impact.toFixed(1);
+    const timeAgo = n.hours_ago !== undefined ? `${n.hours_ago} saat önce` : n.time;
+    
+    html += `
+      <div class="news-item">
+        <div class="news-sentiment ${n.sentiment}"></div>
+        <div style="flex:1">
+          <div class="news-title">${n.title}</div>
+          <div class="news-summary">${n.summary}</div>
+          <div class="news-meta">
+            <span>📰 ${n.source}</span>
+            <span>🕐 ${timeAgo}</span>
+            <span class="news-impact ${impactColor}">Etki: ${impactText}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  document.getElementById('news-list').innerHTML = html;
+}
+
+async function refreshNews() {
+  showToast('Haberler yenileniyor...', 'info');
+  await apiFetch('/api/news/refresh', { method: 'POST' });
+  await loadNews();
+  showToast('Haberler güncellendi', 'success');
+}
+
+// ============================================================
+// İŞLEMLER
+// ============================================================
+function showTradeForm() {
+  const form = document.getElementById('trade-form-card');
+  form.style.display = 'block';
+  
+  // Bugünün tarihini ve saatini doldur
+  const now = new Date();
+  document.getElementById('trade-date').value = now.toISOString().split('T')[0];
+  document.getElementById('trade-time').value = now.toTimeString().slice(0,5);
+  
+  // Mevcut bot sinyalini doldur (opsiyonel)
+  loadCurrentSignalForForm();
+  
+  form.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function loadCurrentSignalForForm() {
+  try {
+    const data = await apiFetch('/api/predictions');
+    if (data.success && data.predictions?.['1d_daily']) {
+      const p = data.predictions['1d_daily'];
+      const signal = `${p.direction} %${((p.confidence||0)*100).toFixed(1)} (${p.signal_strength})`;
+      document.getElementById('trade-bot-signal').value = signal;
+    }
+  } catch(e) {}
+}
+
+function hideTradeForm() {
+  document.getElementById('trade-form-card').style.display = 'none';
+}
+
+function setTradeType(type) {
+  currentTradeType = type;
+  document.getElementById('trade-type').value = type;
+  
+  const buyBtn = document.getElementById('btn-buy-type');
+  const sellBtn = document.getElementById('btn-sell-type');
+  
+  if (type === 'BUY') {
+    buyBtn.className = 'btn btn-buy';
+    sellBtn.className = 'btn btn-secondary';
+  } else {
+    buyBtn.className = 'btn btn-secondary';
+    sellBtn.className = 'btn btn-sell';
+  }
+  
+  updateTotal();
+}
+
+function updateTotal() {
+  const price = parseFloat(document.getElementById('trade-price').value) || 0;
+  const qty = parseFloat(document.getElementById('trade-quantity').value) || 0;
+  const total = price * qty;
+  
+  // Komisyonu otomatik %0.2 hesapla
+  if (total > 0) {
+    const autoCommission = total * 0.002; // %0.2
+    document.getElementById('trade-commission').value = autoCommission.toFixed(2);
+    document.getElementById('trade-total').textContent = total.toFixed(2) + ' ₺ (Kom: ' + autoCommission.toFixed(2) + ' ₺)';
+  } else {
+    document.getElementById('trade-commission').value = '0';
+    document.getElementById('trade-total').textContent = '--';
+  }
+}
+
+// Fiyat/miktar değişince toplamı güncelle
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('trade-price')?.addEventListener('input', updateTotal);
+  document.getElementById('trade-quantity')?.addEventListener('input', updateTotal);
+});
+
+async function submitTrade() {
+  const tradeType = document.getElementById('trade-type').value;
+  const tradeDate = document.getElementById('trade-date').value;
+  const tradeTime = document.getElementById('trade-time').value;
+  const price = document.getElementById('trade-price').value;
+  const quantity = document.getElementById('trade-quantity').value;
+  const commission = document.getElementById('trade-commission').value || '0';
+  const notes = document.getElementById('trade-notes').value;
+  const botSignal = document.getElementById('trade-bot-signal').value;
+  
+  if (!tradeDate || !tradeTime || !price || !quantity) {
+    showToast('Lütfen zorunlu alanları doldurun', 'error');
+    return;
+  }
+  
+  const data = await apiFetch('/api/trades', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      trade_type: tradeType,
+      trade_date: tradeDate,
+      trade_time: tradeTime,
+      price: parseFloat(price),
+      quantity: parseFloat(quantity),
+      commission: parseFloat(commission),
+      notes: notes,
+      bot_signal: botSignal,
+    })
+  });
+  
+  if (data.success) {
+    showToast(data.message, 'success');
+    hideTradeForm();
+    loadTrades();
+    
+    // Formu temizle
+    document.getElementById('trade-price').value = '';
+    document.getElementById('trade-quantity').value = '';
+    document.getElementById('trade-commission').value = '0';
+    document.getElementById('trade-notes').value = '';
+    document.getElementById('trade-total').textContent = '--';
+  } else {
+    showToast('Hata: ' + data.error, 'error');
+  }
+}
+
+async function loadTrades() {
+  const data = await apiFetch('/api/trades');
+  if (!data.success) { showToast('İşlemler yüklenemedi', 'error'); return; }
+  
+  const trades = data.trades || [];
+  document.getElementById('trade-count').textContent = `${trades.length} işlem`;
+  
+  if (trades.length === 0) {
+    document.getElementById('trades-tbody').innerHTML = `
+      <tr><td colspan="11">
+        <div class="empty-state"><div class="empty-icon">💼</div><p>Henüz işlem kaydı yok. "Yeni İşlem" butonuna tıklayın.</p></div>
+      </td></tr>
+    `;
+    return;
+  }
+  
+  let html = '';
+  for (const t of trades) {
+    const isBuy = t.trade_type === 'BUY';
+    const total = (t.total_value || 0).toFixed(2);
+    html += `
+      <tr>
+        <td style="color:var(--text2)">#${t.id}</td>
+        <td><span class="badge ${isBuy ? 'badge-buy' : 'badge-sell'}">${isBuy ? '📈 ALIM' : '📉 SATIM'}</span></td>
+        <td>${t.trade_date || '--'}</td>
+        <td>${t.trade_time || '--'}</td>
+        <td style="font-weight:600">${(t.price || 0).toFixed(2)} ₺</td>
+        <td>${(t.quantity || 0).toFixed(2)}</td>
+        <td style="color:var(--yellow)">${total} ₺</td>
+        <td style="color:var(--text2)">${(t.commission || 0).toFixed(2)} ₺</td>
+        <td style="font-size:0.78rem;color:var(--text2);max-width:120px;overflow:hidden;text-overflow:ellipsis">${t.bot_signal || '--'}</td>
+        <td style="font-size:0.78rem;color:var(--text2)">${t.notes || '--'}</td>
+        <td>
+          <button class="btn btn-danger btn-sm" onclick="deleteTrade(${t.id})">🗑️</button>
+        </td>
+      </tr>
+    `;
+  }
+  document.getElementById('trades-tbody').innerHTML = html;
+}
+
+async function deleteTrade(id) {
+  if (!confirm(`#${id} numaralı işlemi silmek istediğinizden emin misiniz?`)) return;
+  
+  const data = await apiFetch(`/api/trades/${id}`, { method: 'DELETE' });
+  if (data.success) {
+    showToast(data.message, 'success');
+    loadTrades();
+  } else {
+    showToast('Silme hatası: ' + data.error, 'error');
+  }
+}
+
+// ============================================================
+// ANALİZ
+// ============================================================
+async function loadAnalysis() {
+  const data = await apiFetch('/api/analysis');
+  if (!data.success) { showToast('Analiz yüklenemedi', 'error'); return; }
+  
+  const an = data.analysis;
+  const s = an.summary || {};
+  const p = an.performance || {};
+  
+  // Özet kartlar
+  const pl = s.realized_pl || 0;
+  const plEl = document.getElementById('an-realized-pl');
+  plEl.textContent = (pl >= 0 ? '+' : '') + pl.toFixed(2) + ' ₺';
+  plEl.style.color = pl >= 0 ? 'var(--green)' : 'var(--red)';
+  
+  const plNet = s.realized_pl_net || 0;
+  document.getElementById('an-realized-net').textContent = `Net: ${(plNet >= 0 ? '+' : '') + plNet.toFixed(2)} ₺`;
+  
+  const wr = p.win_rate || 0;
+  const wrEl = document.getElementById('an-win-rate');
+  wrEl.textContent = `%${wr.toFixed(1)}`;
+  wrEl.style.color = wr >= 50 ? 'var(--green)' : 'var(--red)';
+  document.getElementById('an-win-detail').textContent = `${p.winning_trades || 0} kazanan / ${p.losing_trades || 0} kaybeden`;
+  
+  const pf = p.profit_factor || 0;
+  const pfEl = document.getElementById('an-profit-factor');
+  pfEl.textContent = pf === 999 ? '∞' : pf.toFixed(2);
+  pfEl.style.color = pf >= 1 ? 'var(--green)' : 'var(--red)';
+  
+  document.getElementById('an-holding').textContent = (p.avg_holding_days || 0).toFixed(1);
+  
+  // Performans detayı
+  renderPerfDetail(s, p, an.current_price);
+  
+  // Öneriler
+  renderRecommendations(an.recommendations);
+  
+  // Aylık grafik
+  renderMonthlyChart(an.monthly_pl);
+  
+  // Kapalı pozisyonlar
+  renderClosedPositions(an.closed_positions);
+}
+
+function renderPerfDetail(s, p, currentPrice) {
+  document.getElementById('an-perf-detail').innerHTML = `
+    <div class="stat-row">
+      <span class="stat-label">Toplam İşlem</span>
+      <span class="stat-value">${s.total_trades || 0} (${s.buy_trades || 0} alım, ${s.sell_trades || 0} satım)</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Toplam Alım Tutarı</span>
+      <span class="stat-value">${(s.total_buy_value || 0).toFixed(2)} ₺</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Toplam Satım Tutarı</span>
+      <span class="stat-value">${(s.total_sell_value || 0).toFixed(2)} ₺</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Toplam Komisyon</span>
+      <span class="stat-value" style="color:var(--red)">-${(s.total_commission || 0).toFixed(2)} ₺</span>
+    </div>
+    <div class="sep"></div>
+    <div class="stat-row">
+      <span class="stat-label">Ort. Kazanç</span>
+      <span class="stat-value" style="color:var(--green)">+${(p.avg_win || 0).toFixed(2)} ₺</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Ort. Kayıp</span>
+      <span class="stat-value" style="color:var(--red)">${(p.avg_loss || 0).toFixed(2)} ₺</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">En İyi İşlem</span>
+      <span class="stat-value" style="color:var(--green)">+${(p.best_trade_pl || 0).toFixed(2)} ₺</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">En Kötü İşlem</span>
+      <span class="stat-value" style="color:var(--red)">${(p.worst_trade_pl || 0).toFixed(2)} ₺</span>
+    </div>
+    ${currentPrice ? `<div class="stat-row"><span class="stat-label">Güncel Fiyat</span><span class="stat-value" style="color:var(--silver)">${currentPrice.toFixed(2)} ₺</span></div>` : ''}
+  `;
+}
+
+function renderRecommendations(recs) {
+  if (!recs || recs.length === 0) {
+    document.getElementById('an-recommendations').innerHTML = '<div class="empty-state"><p>Öneri yok</p></div>';
+    return;
+  }
+  
+  const typeMap = { 'success': 'alert-success', 'warning': 'alert-warning', 'danger': 'alert-danger', 'info': 'alert-info' };
+  
+  let html = '';
+  for (const r of recs) {
+    html += `
+      <div class="alert ${typeMap[r.type] || 'alert-info'}">
+        <div class="alert-icon">${r.icon || 'ℹ️'}</div>
+        <div>
+          <div class="alert-title">${r.title}</div>
+          <div class="alert-text">${r.text}</div>
+        </div>
+      </div>
+    `;
+  }
+  document.getElementById('an-recommendations').innerHTML = html;
+}
+
+function renderMonthlyChart(monthlyPl) {
+  if (!monthlyPl || Object.keys(monthlyPl).length === 0) {
+    document.getElementById('monthly-chart').innerHTML = '<div class="empty-state"><div class="empty-icon">📅</div><p>Aylık veri yok. İşlem ekleyin.</p></div>';
+    return;
+  }
+  
+  const months = Object.entries(monthlyPl).sort((a,b) => a[0].localeCompare(b[0]));
+  const maxAbs = Math.max(...months.map(([,v]) => Math.abs(v)), 1);
+  
+  let html = '<div class="monthly-bar-wrap">';
+  for (const [month, pl] of months) {
+    const pct = Math.abs(pl) / maxAbs * 100;
+    const isPos = pl >= 0;
+    const shortMonth = month.slice(5); // MM
+    const monthNames = {'01':'Oca','02':'Şub','03':'Mar','04':'Nis','05':'May','06':'Haz','07':'Tem','08':'Ağu','09':'Eyl','10':'Eki','11':'Kas','12':'Ara'};
+    
+    html += `
+      <div class="monthly-bar-item">
+        <div class="monthly-bar-val" style="color:${isPos ? 'var(--green)' : 'var(--red)'}">${isPos ? '+' : ''}${pl.toFixed(0)}</div>
+        <div class="monthly-bar ${isPos ? 'positive' : 'negative'}" style="height:${pct}%"></div>
+        <div class="monthly-bar-label">${monthNames[shortMonth] || shortMonth}</div>
+      </div>
+    `;
+  }
+  html += '</div>';
+  
+  // Hedef çizgisi notu
+  html += `<div style="font-size:0.8rem;color:var(--text2);margin-top:8px;text-align:center">
+    📊 Aylık K/Z Grafiği | Hedef: Aylık %15 getiri
+  </div>`;
+  
+  document.getElementById('monthly-chart').innerHTML = html;
+}
+
+function renderClosedPositions(positions) {
+  if (!positions || positions.length === 0) {
+    document.getElementById('closed-positions-tbody').innerHTML = `
+      <tr><td colspan="8"><div class="empty-state"><p>Kapalı pozisyon yok</p></div></td></tr>
+    `;
+    return;
+  }
+  
+  let html = '';
+  for (const pos of positions) {
+    const pl = pos.profit_loss || 0;
+    const plPct = pos.profit_loss_pct || 0;
+    const isPos = pl >= 0;
+    
+    html += `
+      <tr>
+        <td>${pos.open_date || '--'}</td>
+        <td>${pos.close_date || '--'}</td>
+        <td>${(pos.open_price || 0).toFixed(2)} ₺</td>
+        <td>${(pos.close_price || 0).toFixed(2)} ₺</td>
+        <td>${(pos.quantity || 0).toFixed(2)}</td>
+        <td style="color:${isPos ? 'var(--green)' : 'var(--red)'}; font-weight:600">
+          ${isPos ? '+' : ''}${pl.toFixed(2)} ₺
+        </td>
+        <td style="color:${isPos ? 'var(--green)' : 'var(--red)'}">
+          ${isPos ? '+' : ''}${plPct.toFixed(2)}%
+        </td>
+        <td><span class="badge ${isPos ? 'badge-buy' : 'badge-sell'}">${isPos ? '✅ Kar' : '❌ Zarar'}</span></td>
+      </tr>
+    `;
+  }
+  document.getElementById('closed-positions-tbody').innerHTML = html;
+}
+
+// ============================================================
+// AI YORUMU
+// ============================================================
+async function loadAICommentary() {
+  const el = document.getElementById('ai-commentary-box');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> AI yorumu hesaplanıyor...</div>';
+  
+  const data = await apiFetch('/api/ai-commentary');
+  if (!data.success) {
+    el.innerHTML = `<div class="alert alert-warning"><div class="alert-icon">⚠️</div><div><div class="alert-title">AI Yorumu Yüklenemedi</div><div class="alert-text">${data.error || 'Bilinmeyen hata'}</div></div></div>`;
+    return;
+  }
+  
+  const c = data.commentary;
+  const isAl = c.dominant_signal === 'AL';
+  const isSat = c.dominant_signal === 'SAT';
+  const badgeClass = isAl ? 'buy' : isSat ? 'sell' : 'hold';
+  const signalColor = isAl ? 'var(--green)' : isSat ? 'var(--red)' : 'var(--yellow)';
+  const pt = c.price_targets || {};
+  
+  // Sinyal detayları
+  let signalChips = '';
+  for (const sd of (c.signal_details || [])) {
+    const chipClass = sd.signal === 'AL' ? 'al' : sd.signal === 'SAT' ? 'sat' : 'bekle';
+    signalChips += `<span class="ai-signal-chip ${chipClass}">${sd.timeframe}: ${sd.signal} (%${(sd.prob_up*100).toFixed(0)})</span>`;
+  }
+  
+  // Hedef tarihleri (commentary içinde veya üst seviyede)
+  const td = c.target_dates || data.target_dates || {};
+  const t1DateStr = td.target_1_date ? `<div style="font-size:0.7rem;color:var(--text2);margin-top:3px">📅 ~${td.target_1_date} (~${td.target_1_days} iş günü)</div>` : '';
+  const t2DateStr = td.target_2_date ? `<div style="font-size:0.7rem;color:var(--text2);margin-top:3px">📅 ~${td.target_2_date} (~${td.target_2_days} iş günü)</div>` : '';
+  
+  // Fiyat hedefleri
+  let targetsHtml = '';
+  if (isAl && pt.buy_zone_low) {
+    targetsHtml = `
+      <div class="ai-price-targets">
+        <div class="ai-target-item">
+          <div class="ai-target-label">📥 Alım Bölgesi</div>
+          <div class="ai-target-value" style="color:var(--green)">${pt.buy_zone_low?.toFixed(2)} - ${pt.buy_zone_high?.toFixed(2)} ₺</div>
+        </div>
+        <div class="ai-target-item">
+          <div class="ai-target-label">🎯 Hedef 1</div>
+          <div class="ai-target-value" style="color:var(--green)">${pt.target_1?.toFixed(2)} ₺</div>
+          ${t1DateStr}
+        </div>
+        <div class="ai-target-item">
+          <div class="ai-target-label">🎯 Hedef 2</div>
+          <div class="ai-target-value" style="color:var(--cyan)">${pt.target_2?.toFixed(2)} ₺</div>
+          ${t2DateStr}
+        </div>
+        <div class="ai-target-item">
+          <div class="ai-target-label">🛑 Stop-Loss</div>
+          <div class="ai-target-value" style="color:var(--red)">${pt.stop_loss?.toFixed(2)} ₺</div>
+        </div>
+      </div>
+    `;
+  } else if (isSat) {
+    targetsHtml = `
+      <div class="ai-price-targets">
+        <div class="ai-target-item">
+          <div class="ai-target-label">📤 Satış Fiyatı</div>
+          <div class="ai-target-value" style="color:var(--red)">${c.current_price?.toFixed(2)} ₺</div>
+        </div>
+        <div class="ai-target-item">
+          <div class="ai-target-label">📉 Destek 1</div>
+          <div class="ai-target-value" style="color:var(--yellow)">${pt.target_1?.toFixed(2)} ₺</div>
+          ${t1DateStr}
+        </div>
+        <div class="ai-target-item">
+          <div class="ai-target-label">📉 Destek 2</div>
+          <div class="ai-target-value" style="color:var(--orange)">${pt.target_2?.toFixed(2)} ₺</div>
+          ${t2DateStr}
+        </div>
+        <div class="ai-target-item">
+          <div class="ai-target-label">🛑 Stop-Loss</div>
+          <div class="ai-target-value" style="color:var(--red)">${pt.stop_loss?.toFixed(2)} ₺</div>
+        </div>
+      </div>
+    `;
+  } else {
+    targetsHtml = `
+      <div class="ai-price-targets">
+        <div class="ai-target-item">
+          <div class="ai-target-label">📥 İzleme Bölgesi</div>
+          <div class="ai-target-value" style="color:var(--yellow)">${pt.buy_zone_low?.toFixed(2)} - ${pt.buy_zone_high?.toFixed(2)} ₺</div>
+        </div>
+        <div class="ai-target-item">
+          <div class="ai-target-label">🎯 Hedef</div>
+          <div class="ai-target-value" style="color:var(--green)">${pt.target_1?.toFixed(2)} - ${pt.target_2?.toFixed(2)} ₺</div>
+          ${t1DateStr}
+        </div>
+        <div class="ai-target-item">
+          <div class="ai-target-label">🛑 Stop-Loss</div>
+          <div class="ai-target-value" style="color:var(--red)">${pt.stop_loss?.toFixed(2)} ₺</div>
+        </div>
+        <div class="ai-target-item">
+          <div class="ai-target-label">📊 Mevcut Fiyat</div>
+          <div class="ai-target-value" style="color:var(--silver)">${c.current_price?.toFixed(2)} ₺</div>
+        </div>
+      </div>
+    `;
+  }
+  
+  el.innerHTML = `
+    <div class="ai-commentary-box">
+      <!-- Başlık: Aksiyon Badge + Aylık Getiri -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:16px">
+        <div>
+          <div class="ai-action-badge ${badgeClass}">${c.action_emoji} ${c.action_text}</div>
+          <div style="font-size:0.8rem;color:var(--text2);margin-top:4px">🕐 ${c.timestamp}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="monthly-return-badge">
+            📈 Aylık Getiri Tahmini: ~%${c.monthly_return_est}
+          </div>
+          <div style="font-size:0.75rem;color:var(--text2);margin-top:4px">
+            En iyi model: ${c.best_model?.label || '--'} (%${((c.best_model?.accuracy||0)*100).toFixed(1)} doğruluk)
+          </div>
+        </div>
+      </div>
+      
+      <!-- Ana Yorum -->
+      <div class="ai-comment-text">💬 ${c.main_comment}</div>
+      
+      <!-- Strateji -->
+      <div class="ai-strategy-text">📋 ${c.strategy_comment}</div>
+      
+      <!-- Fiyat Hedefleri -->
+      ${targetsHtml}
+      
+      <!-- Sinyal Dağılımı -->
+      <div style="margin-top:14px">
+        <div style="font-size:0.78rem;color:var(--text2);margin-bottom:8px">
+          📊 Model Sinyalleri: 
+          <span style="color:var(--green)">AL: ${c.signal_counts?.AL || 0}</span> | 
+          <span style="color:var(--red)">SAT: ${c.signal_counts?.SAT || 0}</span> | 
+          <span style="color:var(--yellow)">BEKLE: ${c.signal_counts?.BEKLE || 0}</span>
+        </div>
+        <div class="ai-signal-row">${signalChips}</div>
+      </div>
+      
+      <!-- Aylık Getiri Açıklaması -->
+      <div class="ai-monthly-text" style="margin-top:14px">
+        💰 ${c.monthly_comment}
+      </div>
+      
+      <!-- Risk Uyarısı -->
+      <div style="margin-top:12px;font-size:0.75rem;color:var(--text2);text-align:center;opacity:0.7">
+        ⚠️ Bu yorum yatırım tavsiyesi değildir. Kendi analizinizi yapın ve risk yönetimine dikkat edin.
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// TELEGRAM
+// ============================================================
+async function sendTelegramCommentary() {
+  const btn = document.getElementById('telegram-send-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Gönderiliyor...';
+  
+  const data = await apiFetch('/api/telegram/send-commentary', { method: 'POST' });
+  
+  btn.disabled = false;
+  btn.innerHTML = '✈️ Telegram\'a Gönder';
+  
+  if (data.success) {
+    showToast('✅ Telegram\'a başarıyla gönderildi!', 'success');
+  } else {
+    showToast('❌ Telegram hatası: ' + (data.error || 'Bilinmeyen hata'), 'error');
+  }
+}
+
+// ============================================================
+// MODEL DOĞRULAMA
+// ============================================================
+async function loadValidation() {
+  const data = await apiFetch('/api/model-validation');
+  if (!data.success) { showToast('Doğrulama yüklenemedi', 'error'); return; }
+  
+  // Genel durum
+  const scoreColor = data.overall_score >= 75 ? 'var(--green)' : 
+                     data.overall_score >= 55 ? 'var(--yellow)' : 'var(--red)';
+  
+  document.getElementById('val-overall').innerHTML = `
+    <div style="text-align:center;margin-bottom:16px">
+      <div style="font-size:3rem;font-weight:800;color:${scoreColor}">${data.overall_score?.toFixed(0) || 0}</div>
+      <div style="font-size:1.1rem;color:${scoreColor}">${data.overall_status || '--'}</div>
+      <div style="font-size:0.85rem;color:var(--text2);margin-top:8px">${data.overall_note || ''}</div>
+    </div>
+    <div class="progress">
+      <div class="progress-fill" style="width:${data.overall_score || 0}%;background:${scoreColor}"></div>
+    </div>
+    <div style="font-size:0.8rem;color:var(--text2);margin-top:8px">${data.model_count || 0} model analiz edildi</div>
+  `;
+  
+  // Aylık hedef
+  document.getElementById('val-monthly-target').innerHTML = `
+    <div class="alert alert-info">
+      <div class="alert-icon">🎯</div>
+      <div>
+        <div class="alert-title">Aylık %15 Hedef Analizi</div>
+        <div class="alert-text">${data.monthly_target_note || '--'}</div>
+      </div>
+    </div>
+    <div style="font-size:0.82rem;color:var(--text2);margin-top:12px;line-height:1.8">
+      <p>📌 Teorik hesaplama: Test doğruluğu × günlük hareket × 22 işlem günü</p>
+      <p>⚠️ Gerçek performans: Komisyon, slippage ve piyasa koşulları etkiler</p>
+      <p>✅ Öneri: Sadece güçlü sinyal (>%65) olan işlemlere girin</p>
+    </div>
+  `;
+  
+  // Model detayları
+  renderValidationModels(data.validation_results);
+}
+
+function renderValidationModels(results) {
+  if (!results || results.length === 0) {
+    document.getElementById('val-models').innerHTML = '<div class="empty-state"><p>Model verisi yok. Önce eğitim yapın.</p></div>';
+    return;
+  }
+  
+  let html = '';
+  for (const r of results) {
+    const statusClass = r.status === 'SAĞLIKLI' ? 'status-healthy' : 
+                        r.status === 'ZAYIF' ? 'status-weak' : 'status-bad';
+    const scoreColor = r.score >= 70 ? 'var(--green)' : r.score >= 50 ? 'var(--yellow)' : 'var(--red)';
+    
+    html += `
+      <div class="model-card">
+        <div class="model-header">
+          <div class="model-name">📊 ${r.model}</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span style="font-size:0.85rem;color:${scoreColor};font-weight:700">Skor: ${r.score}</span>
+            <span class="model-status ${statusClass}">${r.status}</span>
+          </div>
+        </div>
+        <div class="metric-grid">
+          <div class="metric-item">
+            <div class="metric-val" style="color:var(--accent)">${((r.cv_accuracy||0)*100).toFixed(1)}%</div>
+            <div class="metric-lbl">CV Doğruluk</div>
+          </div>
+          <div class="metric-item">
+            <div class="metric-val" style="color:${r.test_accuracy >= 0.55 ? 'var(--green)' : 'var(--yellow)'}">${((r.test_accuracy||0)*100).toFixed(1)}%</div>
+            <div class="metric-lbl">Test Doğruluk</div>
+          </div>
+          <div class="metric-item">
+            <div class="metric-val" style="color:${r.test_auc >= 0.55 ? 'var(--green)' : 'var(--yellow)'}">${(r.test_auc||0).toFixed(3)}</div>
+            <div class="metric-lbl">AUC</div>
+          </div>
+        </div>
+        <div style="margin-top:10px">
+          <div style="font-size:0.78rem;color:var(--text2);margin-bottom:6px">Aylık Getiri Tahmini: 
+            <span style="color:${r.monthly_15_achievable ? 'var(--green)' : 'var(--yellow)'}">
+              %${r.monthly_return_estimate} ${r.monthly_15_achievable ? '✅ Hedef Ulaşılabilir' : '⚠️ Hedef Altında'}
+            </span>
+          </div>
+          ${r.issues.map(i => `<div style="font-size:0.78rem;margin:3px 0">${i}</div>`).join('')}
+        </div>
+      </div>
+    `;
+  }
+  document.getElementById('val-models').innerHTML = html;
+}
+
+// ============================================================
+// BAŞLANGIÇ
+// ============================================================
+window.addEventListener('load', () => {
+  loadDashboard();
+  
+  // Her 5 dakikada otomatik yenile
+  setInterval(() => {
+    const activePage = document.querySelector('.page.active')?.id;
+    if (activePage === 'page-dashboard') loadDashboard();
+    else if (activePage === 'page-monitor') loadPredictions();
+    else if (activePage === 'page-news') loadNews();
+  }, 300000);
+  
+  // Fiyatı her dakika güncelle
+  setInterval(async () => {
+    const data = await apiFetch('/api/price');
+    if (data.success && data.data?.price) {
+      document.getElementById('nav-price').textContent = data.data.price.toFixed(2) + ' ₺';
+    }
+  }, 60000);
+});
+</script>
+</body>
+</html>

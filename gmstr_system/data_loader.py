@@ -63,10 +63,27 @@ class GMSTRDataLoader:
     def _load_areaxdatetime(self, path: Path) -> pd.DataFrame:
         """5 yıllık areaxdatetime.csv'den gerçek fiyat ölçeğinde OHLCV + benchmark türet."""
         raw = pd.read_csv(path)
-        raw['Date'] = pd.to_datetime(raw['category'], format='%a %b %d %Y', errors='coerce')
-        raw = raw.dropna(subset=['Date']).set_index('Date').sort_index()
-
         raw.columns = [c.strip() for c in raw.columns]
+
+        # Tarih kolonunu bul: 'category', 'Unnamed: 0', 'Date' veya index
+        date_col = None
+        for candidate in ['category', 'Unnamed: 0', 'Date', 'date']:
+            if candidate in raw.columns:
+                date_col = candidate
+                break
+
+        if date_col is not None:
+            # 'category' formatı: 'Mon Jan 01 2021', diğerleri ISO format
+            if date_col == 'category':
+                raw['Date'] = pd.to_datetime(raw[date_col], format='%a %b %d %Y', errors='coerce')
+            else:
+                raw['Date'] = pd.to_datetime(raw[date_col], errors='coerce')
+            raw = raw.dropna(subset=['Date']).set_index('Date').sort_index()
+        else:
+            # Index zaten tarih olabilir
+            raw.index = pd.to_datetime(raw.index, errors='coerce')
+            raw = raw[raw.index.notna()].sort_index()
+
         fund_ret = pd.to_numeric(raw['Net Getiri'], errors='coerce')
         benchmark_ret = pd.to_numeric(raw['Karşılaştırma Ölçütü'], errors='coerce')
 
@@ -76,16 +93,26 @@ class GMSTRDataLoader:
         if real_csv.exists():
             try:
                 real_daily = self._load_gercek_data_daily(real_csv)
-                real_daily.index = real_daily.index.tz_localize(None)
-                common = raw.join(real_daily[['Close']], how='inner')
+                # Timezone temizle
+                if real_daily.index.tz is not None:
+                    real_daily.index = real_daily.index.tz_localize(None)
+                # Suffix ekle - raw'da zaten Open/High/Low/Close/Volume olabilir
+                real_daily_renamed = real_daily[['Close']].rename(columns={'Close': 'Close_real'})
+                common = raw.join(real_daily_renamed, how='inner')
                 if len(common) >= 30:
-                    x = common['Net Getiri'].astype(float).values
-                    y = common['Close'].values
-                    b_slope = np.cov(x, y)[0, 1] / np.var(x)
-                    a_intercept = np.mean(y) - b_slope * np.mean(x)
-                    close_price = a_intercept + b_slope * fund_ret
-                    print(f"[DataLoader] Gerçek fiyat ölçeklemesi uygulandı: "
-                          f"Close = {a_intercept:.2f} + {b_slope:.6f} * fund_ret")
+                    x = common['Net Getiri'].astype(float).fillna(0).values
+                    y = common['Close_real'].fillna(method='ffill').values
+                    # NaN kontrolü
+                    valid = ~(np.isnan(x) | np.isnan(y))
+                    x, y = x[valid], y[valid]
+                    if len(x) >= 30 and np.var(x) > 0:
+                        b_slope = np.cov(x, y)[0, 1] / np.var(x)
+                        a_intercept = np.mean(y) - b_slope * np.mean(x)
+                        close_price = a_intercept + b_slope * fund_ret
+                        print(f"[DataLoader] Gerçek fiyat ölçeklemesi uygulandı: "
+                              f"Close = {a_intercept:.2f} + {b_slope:.6f} * fund_ret")
+                    else:
+                        close_price = 100.0 * (1.0 + fund_ret / 100.0)
                 else:
                     close_price = 100.0 * (1.0 + fund_ret / 100.0)
             except Exception as e:
@@ -117,6 +144,14 @@ class GMSTRDataLoader:
             'Fund_Return': fund_ret,
             'Benchmark_Return': benchmark_ret,
         }).dropna()
+
+        # Makro kolonları varsa ekle (update_gmstr_data.py tarafından eklendi)
+        macro_cols = ['usd_try', 'usd_try_ret', 'gold_usd', 'gold_usd_ret',
+                      'silver_usd', 'silver_usd_ret', 'bist100', 'bist100_ret',
+                      'gold_silver_ratio', 'gold_silver_ratio_ret']
+        for col in macro_cols:
+            if col in raw.columns:
+                df[col] = pd.to_numeric(raw[col], errors='coerce').reindex(df.index)
 
         self.benchmark_df = df['Benchmark_Return'].copy()
         return df
@@ -279,7 +314,8 @@ class GMSTRDataLoader:
         if len(missing) > 0:
             issues.append(f"Eksik işlem günü (tatil): {len(missing)} gün")
 
-        df = df.dropna()
+        # Sadece OHLCV kolonlarında NaN varsa sil (makro kolonlar NaN olabilir)
+        df = df.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'])
         self.clean_df = df.copy()
 
         print(f"[DataLoader] Temizlik tamamlandı: {initial_len} → {len(df)} satır")
