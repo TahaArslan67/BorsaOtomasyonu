@@ -10,7 +10,7 @@ import requests
 import sqlite3
 from datetime import datetime, timedelta
 import schedule
-import time
+import time as time_module
 import logging
 from flask import Flask, jsonify, render_template, request
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
