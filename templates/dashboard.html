@@ -316,10 +316,65 @@
         
         <div class="predictions-section">
             <div class="section-header">
+                <h2>Piyasa Verileri</h2>
+            </div>
+            <div id="marketData">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <div>Piyasa verileri yükleniyor...</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="predictions-section">
+            <div class="section-header">
                 <h2>Tahmin Geçmişi</h2>
                 <div>
+                    <span id="marketStatus" style="margin-right: 10px; font-weight: bold;"></span>
                     <button class="btn" onclick="makePrediction()">Yeni Tahmin Yap</button>
                     <button class="btn" onclick="trainModel()">Modeli Eğit</button>
+                    <button class="btn" onclick="runBacktest()">Backtest Çalıştır</button>
+                </div>
+            </div>
+            <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; padding: 10px; margin-bottom: 15px; font-size: 14px;">
+                <strong>ℹ️ GMSTR Hakkında:</strong> QNB Finans Portföy Gümüş BYF. 
+                Borsa kapalıyken (18:10-09:00) fiyat sabit kalır, bu nedenle gece tahminleri güvenilmez.
+                <span id="marketStatusDetail"></span>
+            </div>
+            
+            <div id="premarketCard" style="display: none; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; padding: 20px; margin-bottom: 20px; color: white; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
+                <h3 style="margin-bottom: 15px; font-size: 1.4rem;">🌙 Pre-Market Gümüş Sinyali</h3>
+                <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: center;">
+                    <div>
+                        <div style="font-size: 2.5rem; font-weight: bold;" id="premarketSignal">-</div>
+                        <div style="opacity: 0.9; margin-top: 5px;" id="premarketDirection">-</div>
+                    </div>
+                    <div style="flex: 1; min-width: 200px;">
+                        <div style="background: rgba(255,255,255,0.2); border-radius: 10px; padding: 15px;">
+                            <div style="margin-bottom: 10px; font-size: 0.85rem; opacity: 0.9;">
+                                <strong>📅 GMSTR Kapanış:</strong> <span id="premarketGMSTRTime">-</span>
+                            </div>
+                            <div style="margin-bottom: 8px; font-size: 1.1rem;">
+                                <strong>GMSTR Kapanış Fiyatı:</strong> ₺<span id="premarketGMSTR">-</span>
+                            </div>
+                            <div style="margin-bottom: 8px; font-size: 0.95rem;">
+                                🥈 <strong>Gümüş 18:10'da:</strong> $<span id="premarketSilverAtClose">-</span>
+                            </div>
+                            <div style="margin-bottom: 8px; font-size: 0.95rem;">
+                                🥈 <strong>Gümüş Şimdi:</strong> $<span id="premarketSilverCurrent">-</span>
+                            </div>
+                            <div style="margin-bottom: 8px; font-size: 1.1rem;">
+                                📈 <strong>Gümüş Değişimi:</strong> <span id="premarketSilverChange">-</span>
+                            </div>
+                            <div style="margin-bottom: 8px;">
+                                🎯 <strong>Hedef Fiyat:</strong> ₺<span id="premarketTarget">-</span>
+                            </div>
+                            <div>🔒 <strong>Güven:</strong> <span id="premarketConfidence">-</span></div>
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.15); border-radius: 8px; font-size: 0.9rem;" id="premarketReason">
+                    -
                 </div>
             </div>
             
@@ -335,18 +390,113 @@
     <script>
         let predictions = [];
         
+        // Borsa durumunu kontrol et (Türkiye saati)
+        function checkMarketStatus() {
+            const now = new Date();
+            const hour = now.getHours();
+            const minute = now.getMinutes();
+            const day = now.getDay(); // 0=Pazar, 1=Pzt, ..., 6=Cumartesi
+            
+            const marketStatus = document.getElementById('marketStatus');
+            const marketDetail = document.getElementById('marketStatusDetail');
+            const predictButton = document.querySelector('button[onclick="makePrediction()"]');
+            
+            // Hafta sonu veya 18:10-09:00 arası
+            const isWeekend = (day === 0 || day === 6);
+            const isAfterHours = (hour > 18 || (hour === 18 && minute >= 10) || hour < 9);
+            
+            if (isWeekend) {
+                marketStatus.innerHTML = '<span style="color: #e74c3c;">🔴 HAFTA SONU - Piyasa Kapalı</span>';
+                marketDetail.textContent = ' | Hafta sonu tahminleri güvenilmez.';
+                if (predictButton) predictButton.style.opacity = '0.6';
+            } else if (isAfterHours) {
+                marketStatus.innerHTML = '<span style="color: #e67e22;">🟠 PİYASA KAPALI (18:10-09:00)</span>';
+                marketDetail.textContent = ' | Gece tahminleri GMSTR için güvenilmez, çünkü BYF fiyatı sabit kalır.';
+                if (predictButton) predictButton.style.opacity = '0.6';
+            } else {
+                marketStatus.innerHTML = '<span style="color: #27ae60;">🟢 PİYASA AÇIK</span>';
+                marketDetail.textContent = '';
+                if (predictButton) predictButton.style.opacity = '1';
+            }
+        }
+        
         // Sayfa yüklendiğinde verileri getir
         document.addEventListener('DOMContentLoaded', function() {
             loadPerformance();
             loadPredictions();
             checkModelStatus();
+            loadMarketData();
+            checkMarketStatus();
+            loadPremarketSignal();
             
             // Her 5 dakikada bir verileri güncelle
             setInterval(() => {
                 loadPerformance();
                 loadPredictions();
+                loadMarketData();
+                checkMarketStatus();
+                loadPremarketSignal();
             }, 5 * 60 * 1000);
         });
+        
+        async function loadPremarketSignal() {
+            try {
+                const response = await fetch('/api/premarket-signal');
+                const data = await response.json();
+                
+                const card = document.getElementById('premarketCard');
+                
+                if (data && !data.error) {
+                    // Sadece borsa kapalıyken göster
+                    const now = new Date();
+                    const hour = now.getHours();
+                    const isAfterHours = (hour > 18 || (hour === 18 && now.getMinutes() >= 10) || hour < 9);
+                    
+                    if (isAfterHours || data.signal === 'HOLD') {
+                        // Sinyal var ama borsa açık - gizle
+                    }
+                    
+                    card.style.display = 'block';
+                    
+                    const signalColors = {
+                        'STRONG_BUY': '#27ae60',
+                        'BUY': '#2ecc71',
+                        'HOLD': '#f39c12',
+                        'SELL': '#e74c3c',
+                        'STRONG_SELL': '#c0392b'
+                    };
+                    
+                    const signalTexts = {
+                        'STRONG_BUY': 'GÜÇLÜ AL 🚀',
+                        'BUY': 'AL 🟢',
+                        'HOLD': 'BEKLE ⏸️',
+                        'SELL': 'SAT 🔴',
+                        'STRONG_SELL': 'GÜÇLÜ SAT 📉'
+                    };
+                    
+                    document.getElementById('premarketSignal').textContent = signalTexts[data.signal] || data.signal;
+                    document.getElementById('premarketSignal').style.color = signalColors[data.signal] || '#fff';
+                    document.getElementById('premarketDirection').textContent = `Yön: ${data.direction}`;
+                    document.getElementById('premarketGMSTRTime').textContent = data.gmstr_close_time || 'Bilinmiyor';
+                    document.getElementById('premarketGMSTR').textContent = data.gmstr_last_close.toFixed(2);
+                    document.getElementById('premarketSilverAtClose').textContent = data.silver_at_close ? data.silver_at_close.toFixed(2) : '-';
+                    document.getElementById('premarketSilverCurrent').textContent = data.silver_current ? data.silver_current.toFixed(2) : '-';
+                    
+                    const changeSign = data.silver_change_pct >= 0 ? '+' : '';
+                    document.getElementById('premarketSilverChange').textContent = `${changeSign}${data.silver_change_pct.toFixed(2)}%`;
+                    document.getElementById('premarketSilverChange').style.color = data.silver_change_pct >= 0 ? '#2ecc71' : '#e74c3c';
+                    
+                    document.getElementById('premarketTarget').textContent = data.target_price.toFixed(2);
+                    document.getElementById('premarketConfidence').textContent = `${(data.confidence * 100).toFixed(1)}%`;
+                    document.getElementById('premarketReason').textContent = data.reason;
+                } else {
+                    card.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Pre-market sinyali yüklenemedi:', error);
+                document.getElementById('premarketCard').style.display = 'none';
+            }
+        }
         
         async function loadPerformance() {
             try {
@@ -541,6 +691,66 @@
                 statusIndicator.classList.remove('active');
                 statusIndicator.classList.add('inactive');
                 statusText.textContent = 'Model Bağlantı Hatası';
+            }
+        }
+        
+        async function loadMarketData() {
+            try {
+                const response = await fetch('/api/market-data');
+                const data = await response.json();
+                
+                if (data && !data.error) {
+                    let html = '<div class="stats-grid">';
+                    for (const [key, value] of Object.entries(data)) {
+                        const changeClass = value.change_24h >= 0 ? 'success' : 'danger';
+                        const changeSign = value.change_24h >= 0 ? '+' : '';
+                        html += `
+                            <div class="stat-card ${changeClass}">
+                                <h3>${key.toUpperCase()}</h3>
+                                <div class="value">${value.current.toFixed(2)}</div>
+                                <div>${changeSign}${value.change_24h.toFixed(2)}% (24s)</div>
+                            </div>
+                        `;
+                    }
+                    html += '</div>';
+                    
+                    const container = document.getElementById('marketData');
+                    if (container) {
+                        container.innerHTML = html;
+                    }
+                }
+            } catch (error) {
+                console.error('Piyasa verisi yüklenemedi:', error);
+            }
+        }
+        
+        async function runBacktest() {
+            const button = event.target;
+            button.disabled = true;
+            button.textContent = 'Backtest Çalışıyor...';
+            
+            try {
+                const response = await fetch('/api/backtest', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ days: 30 })
+                });
+                
+                const result = await response.json();
+                
+                if (result.error) {
+                    alert('Backtest hatası: ' + result.error);
+                } else {
+                    alert(`Backtest Sonuçları:\nToplam İşlem: ${result.total_trades}\nKazanma Oranı: %{result.win_rate.toFixed(1)}\nToplam Getiri: %{result.total_return.toFixed(2)}\nSharpe Ratio: ${result.sharpe_ratio.toFixed(2)}\nMax Drawdown: %{result.max_drawdown.toFixed(2)}`);
+                }
+            } catch (error) {
+                console.error('Backtest hatası:', error);
+                alert('Backtest çalıştırılamadı');
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Backtest Çalıştır';
             }
         }
     </script>

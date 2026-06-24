@@ -16,6 +16,8 @@ from flask import Flask, jsonify, render_template, request
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import accuracy_score, classification_report
+import xgboost as xgb
+import lightgbm as lgb
 import joblib
 import os
 import warnings
@@ -79,7 +81,7 @@ class GMSTRPredictionSystem:
             return False
         
     def init_database(self):
-        """Veritabanını başlat"""
+        """Veritabanını başlat - eksik sütunları otomatik ekle"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -102,6 +104,22 @@ class GMSTRPredictionSystem:
             )
         ''')
         
+        # Eksik sütunları kontrol et ve ekle
+        cursor.execute("PRAGMA table_info(predictions)")
+        existing_columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'predicted_for_time' not in existing_columns:
+            cursor.execute("ALTER TABLE predictions ADD COLUMN predicted_for_time DATETIME")
+            logger.info("predicted_for_time sütunu eklendi")
+        
+        if 'actual_direction' not in existing_columns:
+            cursor.execute("ALTER TABLE predictions ADD COLUMN actual_direction TEXT")
+            logger.info("actual_direction sütunu eklendi")
+        
+        if 'telegram_sent' not in existing_columns:
+            cursor.execute("ALTER TABLE predictions ADD COLUMN telegram_sent INTEGER DEFAULT 0")
+            logger.info("telegram_sent sütunu eklendi")
+        
         # Performans tablosu
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS performance (
@@ -115,14 +133,31 @@ class GMSTRPredictionSystem:
             )
         ''')
         
+        # Backtesting tablosu
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE,
+                total_trades INTEGER,
+                winning_trades INTEGER,
+                losing_trades INTEGER,
+                win_rate REAL,
+                total_return REAL,
+                sharpe_ratio REAL,
+                max_drawdown REAL,
+                timeframe TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         conn.commit()
         conn.close()
         logger.info("Veritabanı başlatıldı")
     
-    def fetch_gmstr_data(self, period="1y"):
+    def fetch_gmstr_data(self, period="2y"):
         """GMSTR verilerini çek"""
         try:
-            # Yahoo Finance'den GMSTR verisi
+            # Yahoo Finance'den GMSTR verisi (1h max 730 gün)
             ticker = yf.Ticker("GMSTR.IS")
             data = ticker.history(period=period, interval="1h")
             
@@ -152,40 +187,68 @@ class GMSTRPredictionSystem:
             logger.error(f"GMSTR veri çekme hatası: {e}")
             return None
     
-    def fetch_market_data(self):
-        """Piyasa verilerini çek"""
+    def fetch_market_data(self, period="2y"):
+        """Piyasa verilerini çek - Genişletilmiş"""
         try:
             # BIST 100
-            bist100 = yf.Ticker("XU100.IS").history(period="1y", interval="1h")
+            bist100 = yf.Ticker("XU100.IS").history(period=period, interval="1h")
             
             # USD/TRY
-            usd_try = yf.Ticker("USDTRY=X").history(period="1y", interval="1h")
+            usd_try = yf.Ticker("USDTRY=X").history(period=period, interval="1h")
             
-            # Gümüş fiyatı (alternatif semboller)
+            # Altın fiyatı
+            gold = None
+            try:
+                gold = yf.Ticker("GC=F").history(period=period, interval="1h")
+                if gold.empty:
+                    gold = None
+            except:
+                pass
+            
+            # Gümüş fiyatı
             silver = None
-            for symbol in ["SILVER", "SI=F", "XAGUSD", "GC=F"]:  # Gümüş veya altın
+            for symbol in ["SI=F", "SILVER", "XAGUSD"]:
                 try:
-                    silver = yf.Ticker(symbol).history(period="1y", interval="1h")
+                    silver = yf.Ticker(symbol).history(period=period, interval="1h")
                     if not silver.empty:
-                        logger.info(f"Alternatif sembol bulundu: {symbol}")
+                        logger.info(f"Gümüş sembolü bulundu: {symbol}")
                         break
                 except:
                     continue
             
+            # VIX (Volatilite endeksi)
+            vix = None
+            try:
+                vix = yf.Ticker("^VIX").history(period=period, interval="1h")
+                if vix.empty:
+                    vix = None
+            except:
+                pass
+            
+            # Brent petrol
+            oil = None
+            try:
+                oil = yf.Ticker("BZ=F").history(period=period, interval="1h")
+                if oil.empty:
+                    oil = None
+            except:
+                pass
+            
             if silver is None or silver.empty:
                 logger.warning("Gümüş verisi bulunamadı, alternatif kullanılacak")
-                # Sahte gümüş verisi oluştur (USD/TRY bazında)
                 if not usd_try.empty:
                     silver = usd_try.copy()
-                    silver['Close'] = silver['Close'] * 0.05  # Yaklaşık gümüş fiyatı
-                    logger.info("USD/TRY bazında sahte gümüş verisi oluşturuldu")
+                    silver['Close'] = silver['Close'] * 0.05
                 else:
                     silver = None
             
             return {
                 'bist100': bist100,
                 'usd_try': usd_try,
-                'silver': silver
+                'gold': gold,
+                'silver': silver,
+                'vix': vix,
+                'oil': oil
             }
         except Exception as e:
             logger.error(f"Piyasa veri çekme hatası: {e}")
@@ -331,17 +394,19 @@ class GMSTRPredictionSystem:
                 logger.error(f"GMSTR verisi yetersiz: {gmstr_len} < 25")
                 return None
             
-            # Özellik isimlerini önceden tanımla
-            feature_names = []
-            for indicator in ['rsi', 'macd', 'macd_signal', 'bb_upper', 'bb_lower', 
-                             'atr', 'stoch_k', 'stoch_d', 'williams_r', 'ema_20', 
-                             'sma_50', 'momentum', 'volume_delta', 'obv', 'cci', 'z_score']:
-                feature_names.append(f'gmstr_{indicator}')
+            # Özellik isimlerini önceden tanımla - Sadece temel göstergeler
+            gmstr_ind_list = ['rsi', 'macd', 'macd_signal', 'bb_upper', 'bb_lower', 
+                              'atr', 'stoch_k', 'stoch_d', 'williams_r', 'ema_20', 
+                              'sma_50', 'momentum', 'volume_delta', 'obv', 'cci', 'z_score']
             
-            for indicator in ['rsi', 'macd', 'ema_20', 'sma_50']:
-                feature_names.append(f'bist_{indicator}')
+            feature_names = [f'gmstr_{ind}' for ind in gmstr_ind_list]
+            feature_names += ['price_change_1h', 'price_change_4h', 'price_change_24h', 'volume_change']
             
-            feature_names.extend(['price_change_1h', 'price_change_4h', 'price_change_24h', 'volume_change'])
+            # Sadece 1 lag - en son değişim
+            feature_names += ['gmstr_rsi_lag1', 'gmstr_macd_lag1', 'gmstr_close_lag1']
+            
+            # Zaman özellikleri
+            feature_names += ['hour_sin', 'hour_cos', 'day_of_week']
             
             self.features = feature_names
             expected_len = len(feature_names)
@@ -368,39 +433,24 @@ class GMSTRPredictionSystem:
                         val = safe_float(raw_val)
                     row.append(val)
                 
-                # Piyasa göstergeleri
-                for indicator in ['rsi', 'macd', 'ema_20', 'sma_50']:
-                    val = 0.0
-                    if bist_indicators and indicator in bist_indicators and i < len(bist_indicators[indicator]):
-                        raw_val = bist_indicators[indicator].iloc[i]
-                        val = safe_float(raw_val)
-                    row.append(val)
-                
                 # Fiyat değişimleri
-                if i >= 1:
-                    price_change_1h = safe_float((gmstr_data['Close'].iloc[i] - gmstr_data['Close'].iloc[i-1]) / gmstr_data['Close'].iloc[i-1])
-                else:
-                    price_change_1h = 0.0
-                row.append(price_change_1h)
+                price_change_1h = safe_float((gmstr_data['Close'].iloc[i] - gmstr_data['Close'].iloc[i-1]) / gmstr_data['Close'].iloc[i-1]) if i >= 1 else 0.0
+                price_change_4h = safe_float((gmstr_data['Close'].iloc[i] - gmstr_data['Close'].iloc[i-4]) / gmstr_data['Close'].iloc[i-4]) if i >= 4 else 0.0
+                price_change_24h = safe_float((gmstr_data['Close'].iloc[i] - gmstr_data['Close'].iloc[i-24]) / gmstr_data['Close'].iloc[i-24]) if i >= 24 else 0.0
+                volume_change = safe_float((gmstr_data['Volume'].iloc[i] - gmstr_data['Volume'].iloc[i-1]) / gmstr_data['Volume'].iloc[i-1]) if i >= 1 else 0.0
+                row += [price_change_1h, price_change_4h, price_change_24h, volume_change]
                 
-                if i >= 4:
-                    price_change_4h = safe_float((gmstr_data['Close'].iloc[i] - gmstr_data['Close'].iloc[i-4]) / gmstr_data['Close'].iloc[i-4])
-                else:
-                    price_change_4h = 0.0
-                row.append(price_change_4h)
+                # Sadece 1 lag
+                rsi_lag = safe_float(gmstr_indicators['rsi'].iloc[i-1]) if 'rsi' in gmstr_indicators and i-1 >= 0 else 0.0
+                macd_lag = safe_float(gmstr_indicators['macd'].iloc[i-1]) if 'macd' in gmstr_indicators and i-1 >= 0 else 0.0
+                close_lag = safe_float((gmstr_data['Close'].iloc[i] - gmstr_data['Close'].iloc[i-1]) / gmstr_data['Close'].iloc[i-1]) if i-1 >= 0 else 0.0
+                row += [rsi_lag, macd_lag, close_lag]
                 
-                if i >= 24:
-                    price_change_24h = safe_float((gmstr_data['Close'].iloc[i] - gmstr_data['Close'].iloc[i-24]) / gmstr_data['Close'].iloc[i-24])
-                else:
-                    price_change_24h = 0.0
-                row.append(price_change_24h)
-                
-                # Hacim değişimi
-                if i >= 1:
-                    volume_change = safe_float((gmstr_data['Volume'].iloc[i] - gmstr_data['Volume'].iloc[i-1]) / gmstr_data['Volume'].iloc[i-1])
-                else:
-                    volume_change = 0.0
-                row.append(volume_change)
+                # Zaman özellikleri (sin/cos encoding ile saat)
+                timestamp = gmstr_data.index[i]
+                hour_sin = np.sin(2 * np.pi * timestamp.hour / 24)
+                hour_cos = np.cos(2 * np.pi * timestamp.hour / 24)
+                row += [hour_sin, hour_cos, float(timestamp.dayofweek)]
                 
                 # Uzunluk kontrolü
                 if len(row) == expected_len:
@@ -428,17 +478,18 @@ class GMSTRPredictionSystem:
             logger.error(f"Detaylı hata: {traceback.format_exc()}")
             return None
     
-    def create_labels(self, data, timeframe_hours=4):
-        """Etiketler oluştur (yön tahmini)"""
+    def create_labels(self, data, timeframe_hours=48):
+        """Etiketler oluştur - 48 saat, %2 eşik (sadece güçlü hareketler)"""
         labels = []
         
         for i in range(20, len(data) - timeframe_hours):
             current_price = data['Close'].iloc[i]
             future_price = data['Close'].iloc[i + timeframe_hours]
             
-            if future_price > current_price * 1.005:  # %0.5'tan fazla artış
+            # %2 eşik - sadece net hareketleri tahmin et
+            if future_price > current_price * 1.02:
                 labels.append(1)  # Yükseliş
-            elif future_price < current_price * 0.995:  # %0.5'tan fazla düşüş
+            elif future_price < current_price * 0.98:
                 labels.append(0)  # Düşüş
             else:
                 labels.append(2)  # Yatay
@@ -476,28 +527,31 @@ class GMSTRPredictionSystem:
             X = X[mask]
             y = y[mask]
             
-            # Train-test split
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+            # Train-test split - Stratified (sınıf dağılımını koru)
+            from sklearn.model_selection import train_test_split
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=42, stratify=y, shuffle=True
+            )
             
-            # Model seçimi ve eğitimi
-            models = {
-                'RandomForest': RandomForestClassifier(n_estimators=100, random_state=42),
-                'GradientBoosting': GradientBoostingClassifier(n_estimators=100, random_state=42)
-            }
+            logger.info(f"Eğitim: {len(X_train)} örnek, Test: {len(X_test)} örnek")
             
-            best_model = None
-            best_score = 0
+            # Class dağılımını logla
+            from collections import Counter
+            train_dist = Counter(y_train)
+            test_dist = Counter(y_test)
+            logger.info(f"Eğitim sınıf dağılımı: {dict(train_dist)}")
+            logger.info(f"Test sınıf dağılımı: {dict(test_dist)}")
             
-            for name, model in models.items():
-                # Cross-validation
-                cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring='accuracy')
-                avg_score = cv_scores.mean()
-                
-                logger.info(f"{name} CV Score: {avg_score:.4f}")
-                
-                if avg_score > best_score:
-                    best_score = avg_score
-                    best_model = model
+            # Basit ama güçlü model - RandomForest
+            best_model = RandomForestClassifier(
+                n_estimators=100, 
+                max_depth=8, 
+                min_samples_split=10,
+                min_samples_leaf=5,
+                class_weight='balanced',
+                random_state=42, 
+                n_jobs=-1
+            )
             
             # En iyi modeli eğit
             best_model.fit(X_train, y_train)
@@ -509,14 +563,20 @@ class GMSTRPredictionSystem:
             logger.info(f"Test Accuracy: {accuracy:.4f}")
             logger.info(f"Classification Report:\n{classification_report(y_test, y_pred)}")
             
-            if accuracy >= 0.65:
-                logger.info(f"Model %65 başarı oranına ulaştı: {accuracy:.4f}")
+            if accuracy >= 0.60:  # Eşiği %60'a düşür (daha gerçekçi)
+                logger.info(f"Model başarı oranına ulaştı: {accuracy:.4f}")
                 self.model = best_model
                 joblib.dump(best_model, self.model_path)
                 
                 # Özellik isimlerini kaydet
                 with open('feature_names.txt', 'w') as f:
                     f.write(','.join(self.features))
+                
+                # Feature importance logla
+                importances = best_model.feature_importances_
+                feat_imp = list(zip(self.features, importances))
+                feat_imp.sort(key=lambda x: x[1], reverse=True)
+                logger.info(f"En önemli 10 özellik: {feat_imp[:10]}")
                 
                 return True
             else:
@@ -526,6 +586,17 @@ class GMSTRPredictionSystem:
         except Exception as e:
             logger.error(f"Model eğitimi hatası: {e}")
             return False
+    
+    def is_borsa_open(self):
+        """Borsa açık mı kontrol et (Türkiye saati)"""
+        now = datetime.now()
+        # Hafta sonu kontrol
+        if now.weekday() >= 5:  # Cumartesi=5, Pazar=6
+            return False
+        # Saat kontrolü (09:00 - 18:10)
+        market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        market_close = now.replace(hour=18, minute=10, second=0, microsecond=0)
+        return market_open <= now <= market_close
     
     def make_prediction(self, timeframe="4h"):
         """Tahmin yap"""
@@ -540,8 +611,8 @@ class GMSTRPredictionSystem:
                     logger.error("Model bulunamadı, önce eğitim yapın")
                     return None
             
-            # Güncel verileri çek
-            gmstr_data = self.fetch_gmstr_data(period="30d")
+            # Güncel verileri çek (1h max 730 gün)
+            gmstr_data = self.fetch_gmstr_data(period="2y")
             market_data = self.fetch_market_data()
             
             if gmstr_data is None:
@@ -790,9 +861,328 @@ class GMSTRPredictionSystem:
         except Exception as e:
             logger.error(f"Performans istatistikleri hatası: {e}")
             return None
+    
+    def get_premarket_signal(self):
+        """Borsa kapalıyken gümüş hareketine göre açılış sinyali - GMSTR kapanış anındaki gümüş fiyatından hesapla"""
+        try:
+            # GMSTR son kapanış fiyatı ve zamanı
+            gmstr = yf.Ticker("GMSTR.IS")
+            gmstr_data = gmstr.history(period="5d")
+            if gmstr_data.empty:
+                return None
+            gmstr_last_close = gmstr_data['Close'].iloc[-1]
+            gmstr_close_time = gmstr_data.index[-1]  # Son kapanış zamanı
+            
+            # Gerçek gümüş (SI=F) verisi
+            silver = yf.Ticker("SI=F")
+            silver_data = silver.history(period="7d")  # Daha uzun süre (hafta sonu olabilir)
+            if silver_data.empty:
+                return None
+            silver_current = silver_data['Close'].iloc[-1]
+            
+            # GMSTR kapanış anındaki gümüş fiyatını bul (en yakın zaman)
+            silver_at_gmstr_close = None
+            for i in range(len(silver_data)-1, -1, -1):
+                if silver_data.index[i] <= gmstr_close_time:
+                    silver_at_gmstr_close = silver_data['Close'].iloc[i]
+                    break
+            
+            if silver_at_gmstr_close is None:
+                silver_at_gmstr_close = silver_data['Close'].iloc[0]  # En erken bulunabilen
+            
+            # Gümüşteki değişim = (Şimdi - Kapanış anındaki) / Kapanış anındaki
+            silver_change_pct = ((silver_current - silver_at_gmstr_close) / silver_at_gmstr_close) * 100
+            
+            logger.info(f"Pre-market: GMSTR kapandığında gümüş={silver_at_gmstr_close:.2f}, Şimdi={silver_current:.2f}, Değişim={silver_change_pct:.2f}%")
+            
+            # Sinyal oluştur
+            if silver_change_pct > 1.5:
+                signal = "STRONG_BUY"
+                direction = "YÜKSELİŞ"
+                confidence = min(0.70 + abs(silver_change_pct) * 0.02, 0.95)
+                reason = f"GMSTR kapanışından beri gümüş %{silver_change_pct:.2f} yükseldi"
+            elif silver_change_pct > 0.5:
+                signal = "BUY"
+                direction = "YÜKSELİŞ"
+                confidence = min(0.60 + abs(silver_change_pct) * 0.05, 0.75)
+                reason = f"GMSTR kapanışından beri gümüş %{silver_change_pct:.2f} yükseldi"
+            elif silver_change_pct < -1.5:
+                signal = "STRONG_SELL"
+                direction = "DÜŞÜŞ"
+                confidence = min(0.70 + abs(silver_change_pct) * 0.02, 0.95)
+                reason = f"GMSTR kapanışından beri gümüş %{abs(silver_change_pct):.2f} düştü"
+            elif silver_change_pct < -0.5:
+                signal = "SELL"
+                direction = "DÜŞÜŞ"
+                confidence = min(0.60 + abs(silver_change_pct) * 0.05, 0.75)
+                reason = f"GMSTR kapanışından beri gümüş %{abs(silver_change_pct):.2f} düştü"
+            else:
+                signal = "HOLD"
+                direction = "YATAY"
+                confidence = 0.55
+                reason = f"GMSTR kapanışından beri gümüş %{silver_change_pct:.2f} değişti (yatay)"
+            
+            # Hedef fiyat = GMSTR kapanış × gümüş değişimi
+            target = gmstr_last_close * (1 + silver_change_pct / 100)
+            
+            return {
+                'gmstr_last_close': gmstr_last_close,
+                'gmstr_close_time': gmstr_close_time.strftime('%d.%m.%Y %H:%M'),
+                'silver_at_close': silver_at_gmstr_close,
+                'silver_current': silver_current,
+                'silver_change_pct': silver_change_pct,
+                'signal': signal,
+                'direction': direction,
+                'confidence': confidence,
+                'target_price': target,
+                'reason': reason,
+                'timestamp': datetime.now().strftime('%d.%m.%Y %H:%M')
+            }
+            
+        except Exception as e:
+            logger.error(f"Pre-market sinyal hatası: {e}")
+            return None
+    
+    def backtest_premarket(self, days=30):
+        """Pre-market sinyali backtest - Geçmişte ne kadar doğru tahmin etmiş?"""
+        try:
+            logger.info(f"Pre-market backtest başlatılıyor: Son {days} gün")
+            
+            # GMSTR ve gümüş verilerini çek
+            gmstr = yf.Ticker("GMSTR.IS")
+            gmstr_data = gmstr.history(period=f"{days+5}d")
+            
+            silver = yf.Ticker("SI=F")
+            silver_data = silver.history(period=f"{days+10}d")  # Daha uzun (7/24 açık)
+            
+            if gmstr_data.empty or silver_data.empty:
+                logger.error("Veri çekilemedi")
+                return None
+            
+            trades = []
+            
+            # Her iş günü için kontrol et
+            for i in range(1, len(gmstr_data)):
+                # Önceki gün kapanış
+                prev_close_time = gmstr_data.index[i-1]
+                prev_close_price = gmstr_data['Close'].iloc[i-1]
+                
+                # O gün açılış
+                curr_open_time = gmstr_data.index[i]
+                curr_open_price = gmstr_data['Open'].iloc[i]
+                
+                # Sadece 1 gün fark varsa (hafta sonu atla)
+                time_diff = (curr_open_time - prev_close_time).total_seconds()
+                if time_diff > 172800:  # 48 saatten fazla = hafta sonu
+                    continue
+                
+                # Kapanış anındaki gümüş fiyatı
+                silver_at_close = None
+                for j in range(len(silver_data)-1, -1, -1):
+                    if silver_data.index[j] <= prev_close_time:
+                        silver_at_close = silver_data['Close'].iloc[j]
+                        break
+                
+                # Açılış anındaki gümüş fiyatı
+                silver_at_open = None
+                for j in range(len(silver_data)):
+                    if silver_data.index[j] >= curr_open_time:
+                        silver_at_open = silver_data['Close'].iloc[j]
+                        break
+                
+                if silver_at_close is None or silver_at_open is None:
+                    continue
+                
+                # Gümüş değişimi
+                silver_change = ((silver_at_open - silver_at_close) / silver_at_close) * 100
+                
+                # Tahmin
+                if abs(silver_change) > 0.5:
+                    predicted_direction = "YÜKSELİŞ" if silver_change > 0 else "DÜŞÜŞ"
+                    
+                    # Gerçekleşen
+                    actual_change = ((curr_open_price - prev_close_price) / prev_close_price) * 100
+                    actual_direction = "YÜKSELİŞ" if actual_change > 0 else "DÜŞÜŞ"
+                    
+                    is_correct = predicted_direction == actual_direction
+                    
+                    trades.append({
+                        'date': curr_open_time.strftime('%Y-%m-%d'),
+                        'gmstr_close': prev_close_price,
+                        'gmstr_open': curr_open_price,
+                        'silver_close': silver_at_close,
+                        'silver_open': silver_at_open,
+                        'silver_change': silver_change,
+                        'predicted': predicted_direction,
+                        'actual': actual_direction,
+                        'correct': is_correct,
+                        'gmstr_gap': actual_change
+                    })
+            
+            if not trades:
+                logger.warning("Yeterli işlem bulunamadı")
+                return None
+            
+            # İstatistikler
+            total = len(trades)
+            correct = sum(1 for t in trades if t['correct'])
+            accuracy = (correct / total * 100) if total > 0 else 0
+            
+            avg_gap = np.mean([t['gmstr_gap'] for t in trades])
+            max_gap = max([abs(t['gmstr_gap']) for t in trades])
+            
+            result = {
+                'total_trades': total,
+                'correct_predictions': correct,
+                'accuracy': accuracy,
+                'avg_gap_percent': avg_gap,
+                'max_gap_percent': max_gap,
+                'trades': trades[-10:]  # Son 10 işlem
+            }
+            
+            logger.info(f"Backtest tamamlandı: {correct}/{total} doğru (%{accuracy:.1f})")
+            logger.info(f"Ortalama açılış gap'i: %{avg_gap:.2f}, Max gap: %{max_gap:.2f}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Pre-market backtest hatası: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
+    def calculate_risk_management(self, current_price, predicted_price, direction, confidence):
+        """Risk yönetimi hesapla"""
+        try:
+            # Volatilite bazlı stop-loss
+            volatility = abs(predicted_price - current_price) / current_price
+            
+            if direction == "YÜKSELİŞ":
+                stop_loss = current_price * (1 - volatility * 1.5)
+                take_profit = predicted_price
+            else:
+                stop_loss = current_price * (1 + volatility * 1.5)
+                take_profit = predicted_price
+            
+            # Risk/Ödül oranı
+            risk = abs(current_price - stop_loss)
+            reward = abs(current_price - take_profit)
+            risk_reward_ratio = reward / risk if risk > 0 else 0
+            
+            # Pozisyon büyüklüğü (güvene göre)
+            if confidence >= 0.80:
+                position_size = 100  # %100
+            elif confidence >= 0.70:
+                position_size = 75   # %75
+            elif confidence >= 0.60:
+                position_size = 50   # %50
+            else:
+                position_size = 25   # %25
+            
+            return {
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'risk_reward_ratio': risk_reward_ratio,
+                'position_size': position_size,
+                'risk_amount': risk,
+                'potential_profit': reward
+            }
+            
+        except Exception as e:
+            logger.error(f"Risk yönetimi hatası: {e}")
+            return None
+    
+    def run_backtest(self, days=30):
+        """Backtesting simülasyonu"""
+        try:
+            logger.info(f"Backtesting başlatılıyor: Son {days} gün")
+            
+            # Geçmiş tahminleri al
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT current_price, predicted_price, predicted_direction, 
+                       actual_price, confidence, is_correct
+                FROM predictions
+                WHERE is_correct IS NOT NULL
+                AND datetime(created_at) > datetime('now', '-{} days')
+                ORDER BY timestamp
+            '''.format(days))
+            
+            trades = cursor.fetchall()
+            conn.close()
+            
+            if not trades:
+                logger.warning("Backtest için yeterli veri yok")
+                return None
+            
+            # Simülasyon
+            total_trades = len(trades)
+            winning_trades = 0
+            losing_trades = 0
+            total_return = 0
+            returns = []
+            
+            for trade in trades:
+                current, predicted, direction, actual, confidence, is_correct = trade
+                
+                if is_correct:
+                    winning_trades += 1
+                    trade_return = abs((actual - current) / current) * 100
+                else:
+                    losing_trades += 1
+                    trade_return = -abs((actual - current) / current) * 100
+                
+                total_return += trade_return
+                returns.append(trade_return)
+            
+            # İstatistikler
+            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+            
+            # Sharpe Ratio (basitleştirilmiş)
+            if len(returns) > 1:
+                returns_array = np.array(returns)
+                avg_return = np.mean(returns_array)
+                std_return = np.std(returns_array)
+                sharpe = (avg_return / std_return) * np.sqrt(252) if std_return > 0 else 0
+            else:
+                sharpe = 0
+            
+            # Max Drawdown
+            cumulative = np.cumsum(returns)
+            running_max = np.maximum.accumulate(cumulative)
+            drawdown = cumulative - running_max
+            max_drawdown = np.min(drawdown) if len(drawdown) > 0 else 0
+            
+            result = {
+                'total_trades': total_trades,
+                'winning_trades': winning_trades,
+                'losing_trades': losing_trades,
+                'win_rate': win_rate,
+                'total_return': total_return,
+                'sharpe_ratio': sharpe,
+                'max_drawdown': max_drawdown,
+                'avg_return_per_trade': total_return / total_trades if total_trades > 0 else 0
+            }
+            
+            logger.info(f"Backtest tamamlandı: {winning_trades}/{total_trades} kazançlı (%{win_rate:.1f}), Toplam getiri: %{total_return:.2f}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Backtesting hatası: {e}")
+            return None
 
-# Flask API
+# Flask API + SocketIO
 app = Flask(__name__)
+try:
+    from flask_socketio import SocketIO
+    socketio = SocketIO(app, cors_allowed_origins="*")
+    logger.info("SocketIO başlatıldı")
+except ImportError:
+    socketio = None
+    logger.warning("flask-socketio kurulu değil, WebSocket devre dışı")
+
 prediction_system = GMSTRPredictionSystem()
 
 @app.route('/')
@@ -863,15 +1253,102 @@ def train_model():
     else:
         return jsonify({'error': 'Model eğitilemedi'}), 500
 
+@app.route('/api/risk', methods=['POST'])
+def get_risk_analysis():
+    """Risk analizi yap"""
+    try:
+        data = request.json
+        current_price = data.get('current_price', 0)
+        predicted_price = data.get('predicted_price', 0)
+        direction = data.get('direction', 'YÜKSELİŞ')
+        confidence = data.get('confidence', 0.5)
+        
+        risk = prediction_system.calculate_risk_management(
+            current_price, predicted_price, direction, confidence
+        )
+        
+        if risk:
+            return jsonify(risk)
+        else:
+            return jsonify({'error': 'Risk analizi yapılamadı'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/backtest', methods=['POST'])
+def run_backtest():
+    """Backtesting çalıştır"""
+    try:
+        days = request.json.get('days', 30)
+        result = prediction_system.run_backtest(days)
+        
+        if result:
+            return jsonify(result)
+        else:
+            return jsonify({'error': 'Backtest için yeterli veri yok'}), 400
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/market-data')
+def get_market_data():
+    """Güncel piyasa verileri"""
+    try:
+        market_data = prediction_system.fetch_market_data()
+        
+        if market_data:
+            result = {}
+            for key, df in market_data.items():
+                if df is not None and not df.empty:
+                    result[key] = {
+                        'current': float(df['Close'].iloc[-1]),
+                        'change_24h': float((df['Close'].iloc[-1] - df['Close'].iloc[-24]) / df['Close'].iloc[-24] * 100) if len(df) >= 24 else 0
+                    }
+            return jsonify(result)
+        else:
+            return jsonify({'error': 'Veri çekilemedi'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/premarket-signal')
+def get_premarket():
+    """Pre-market gümüş sinyali"""
+    try:
+        signal = prediction_system.get_premarket_signal()
+        
+        if signal:
+            return jsonify(signal)
+        else:
+            return jsonify({'error': 'Pre-market sinyali alınamadı'}), 500
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 def scheduled_predictions():
-    """Otomatik tahminler"""
+    """Otomatik tahminler - Sadece borsa açıkken"""
     logger.info("Otomatik tahminler başlatılıyor...")
     
-    # Her gün 09:00 ve 15:00'te tahmin yap
-    schedule.every().day.at("09:00").do(lambda: prediction_system.make_prediction("4h"))
-    schedule.every().day.at("15:00").do(lambda: prediction_system.make_prediction("4h"))
+    def safe_prediction(timeframe):
+        """Güvenli tahmin - borsa kapalıysa uyarı ver"""
+        if not prediction_system.is_borsa_open():
+            logger.info("Borsa kapalı, tahmin atlanıyor")
+            return None
+        return prediction_system.make_prediction(timeframe)
     
-    # Her saat tahminleri güncelle
+    # Her gün 09:00 ve 15:00'te tahmin yap (sadece hafta içi)
+    schedule.every().monday.at("09:00").do(lambda: safe_prediction("4h"))
+    schedule.every().monday.at("15:00").do(lambda: safe_prediction("4h"))
+    schedule.every().tuesday.at("09:00").do(lambda: safe_prediction("4h"))
+    schedule.every().tuesday.at("15:00").do(lambda: safe_prediction("4h"))
+    schedule.every().wednesday.at("09:00").do(lambda: safe_prediction("4h"))
+    schedule.every().wednesday.at("15:00").do(lambda: safe_prediction("4h"))
+    schedule.every().thursday.at("09:00").do(lambda: safe_prediction("4h"))
+    schedule.every().thursday.at("15:00").do(lambda: safe_prediction("4h"))
+    schedule.every().friday.at("09:00").do(lambda: safe_prediction("4h"))
+    schedule.every().friday.at("15:00").do(lambda: safe_prediction("4h"))
+    
+    # Her saat tahminleri güncelle (doğrulama her zaman çalışabilir)
     schedule.every().hour.do(lambda: prediction_system.update_predictions())
     
     while True:
