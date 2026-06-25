@@ -13,6 +13,8 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score
 from sklearn.calibration import CalibratedClassifierCV
 import lightgbm as lgb
 import logging
+import joblib
+import os
 from datetime import datetime
 from scipy.signal import argrelextrema
 
@@ -25,6 +27,7 @@ class GMSTRSwingPredictor:
         self.pca = None
         self.feature_cols = []
         self.last_train_time = None
+        self.model_path = 'swing_model_v3.pkl'
         
     def fetch_data(self, period="2y", interval="1h"):
         ticker = yf.Ticker("GMSTR.IS")
@@ -350,6 +353,18 @@ class GMSTRSwingPredictor:
         self.model.fit(X_p, y)
         self.last_train_time = datetime.now()
         
+        # Modeli kaydet
+        try:
+            joblib.dump({
+                'model': self.model,
+                'scaler': self.scaler,
+                'pca': self.pca,
+                'feature_cols': self.feature_cols
+            }, self.model_path)
+            logger.info(f"Swing modeli kaydedildi: {self.model_path}")
+        except Exception as e:
+            logger.warning(f"Model kaydetme hatasi: {e}")
+        
         # Feature importance log
         importance = self.model.feature_importances_
         top_idx = np.argsort(importance)[-10:][::-1]
@@ -359,9 +374,25 @@ class GMSTRSwingPredictor:
         
         return True
     
+    def load_model(self):
+        """Diskten kaydedilmis modeli yukle"""
+        try:
+            if os.path.exists(self.model_path):
+                data = joblib.load(self.model_path)
+                self.model = data['model']
+                self.scaler = data['scaler']
+                self.pca = data['pca']
+                self.feature_cols = data.get('feature_cols', [])
+                logger.info(f"Swing modeli yuklendi: {self.model_path}")
+                return True
+        except Exception as e:
+            logger.warning(f"Model yukleme hatasi: {e}")
+        return False
+    
     def predict(self):
         if self.model is None:
-            if not self.train():
+            if not self.load_model():
+                logger.error("Swing modeli bulunamadi. Lutfen once /api/swing/train ile modeli egitin.")
                 return None
         
         data = self.fetch_data("60d", "1h")
@@ -410,3 +441,15 @@ class GMSTRSwingPredictor:
             'near_support': bool(is_near_support),
             'near_resistance': bool(is_near_resistance)
         }
+
+
+if __name__ == '__main__':
+    import logging
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+    print("Swing V3 modeli egitiliyor...")
+    sp = GMSTRSwingPredictor()
+    success = sp.train()
+    if success:
+        print(f"Model kaydedildi: {sp.model_path}")
+    else:
+        print("Egitim basarisiz!")

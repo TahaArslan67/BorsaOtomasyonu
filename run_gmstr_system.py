@@ -7,6 +7,9 @@ import sys
 import os
 from pathlib import Path
 
+# Kesinlikle local modulu kullan, site-packages'taki eski kopya degil
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 def install_requirements():
     """Gerekli paketleri kur"""
     print("Gerekli paketler kuruluyor...")
@@ -76,7 +79,7 @@ def main():
     # Sistemi çalıştır
     try:
         from gmstr_prediction_system import app
-        app.run(host='0.0.0.0', port=5000, debug=False)
+        app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=True)
     except KeyboardInterrupt:
         print("\nSistem durduruldu.")
     except Exception as e:

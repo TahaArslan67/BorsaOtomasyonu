@@ -303,9 +303,25 @@ class GMSTRPredictionSystem:
                     logger.error("GMSTR verisi formatı geçersiz")
                     return self._gmstr_cache if self._gmstr_cache and len(self._gmstr_cache) >= 50 else None
             
+            # Fallback: yetersiz veri ise kisa period veya farkli interval dene
             if data.empty or len(data) < 50:
-                logger.error(f"GMSTR verisi yetersiz: {len(data) if not data.empty else 0} satir")
-                return self._gmstr_cache if self._gmstr_cache and len(self._gmstr_cache) >= 50 else None
+                logger.warning(f"GMSTR verisi yetersiz ({len(data) if not data.empty else 0} satir), fallback deneniyor...")
+                for fallback_period in ["6mo", "3mo", "1mo", "max"]:
+                    for fallback_interval in ["1h", "1d"]:
+                        try:
+                            data = ticker.history(period=fallback_period, interval=fallback_interval)
+                            if data is not None and not data.empty and len(data) >= 50:
+                                logger.info(f"GMSTR fallback basarili: {fallback_period}/{fallback_interval}, {len(data)} satir")
+                                break
+                        except Exception as fallback_err:
+                            logger.debug(f"Fallback hatasi {fallback_period}/{fallback_interval}: {fallback_err}")
+                    else:
+                        continue
+                    break
+                
+                if data.empty or len(data) < 50:
+                    logger.error(f"GMSTR verisi yetersiz: {len(data) if not data.empty else 0} satir (tum denemeler basarisiz)")
+                    return self._gmstr_cache if self._gmstr_cache and len(self._gmstr_cache) >= 50 else None
             
             self._gmstr_cache = data
             self._gmstr_cache_time = now
@@ -881,8 +897,8 @@ class GMSTRPredictionSystem:
         # Hafta sonu kontrol
         if now.weekday() >= 5:  # Cumartesi=5, Pazar=6
             return False
-        # Saat kontrolü (09:00 - 18:10)
-        market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        # Saat kontrolü (10:00 - 18:10)
+        market_open = now.replace(hour=10, minute=0, second=0, microsecond=0)
         market_close = now.replace(hour=18, minute=10, second=0, microsecond=0)
         return market_open <= now <= market_close
     
@@ -1349,12 +1365,17 @@ class GMSTRPredictionSystem:
             return None
     
     def save_prediction(self, current_price, direction, target_price, confidence, timeframe, predicted_for_time=None):
-        """Tahmini veritabanına kaydet ve ID döndür"""
+        """Tahmini veritabanına kaydet ve ID döndür - Sadece borsa acikken"""
         try:
+            now = datetime.now()
+            
+            # Borsa kapaliysa kaydetme
+            if not self.is_borsa_open():
+                logger.info(f"Borsa kapali, tahmin kaydedilmedi: {direction} @{now.strftime('%H:%M')}")
+                return None
+            
             conn = self.get_db_connection()
             cursor = conn.cursor()
-            
-            now = datetime.now()
             
             if self.is_postgres:
                 cursor.execute('''
@@ -1396,10 +1417,21 @@ class GMSTRPredictionSystem:
     def update_predictions(self):
         """Tahminleri guncelle (dogruluk kontrolu) - Otomatik"""
         try:
+            now = datetime.now()
+            day = now.weekday()
+            hour = now.hour
+            minute = now.minute
+            
+            # Hafta sonu veya 18:10 - 10:00 arasi borsa kapali
+            is_weekend = day >= 5
+            is_after_hours = (hour > 18) or (hour == 18 and minute >= 10) or (hour < 10)
+            
+            if is_weekend or is_after_hours:
+                logger.info("Borsa kapali, tahmin dogrulama atlandi")
+                return
+            
             conn = self.get_db_connection()
             cursor = conn.cursor()
-            
-            now = datetime.now()
             
             # Daha agresif validasyon: 5dk gecmis veya predicted_for_time gecmis olanlar
             if self.is_postgres:
@@ -1532,6 +1564,11 @@ class GMSTRPredictionSystem:
                     FROM predictions
                     WHERE is_correct IS NOT NULL
                     AND created_at > %s
+                    AND EXTRACT(DOW FROM timestamp) BETWEEN 1 AND 5
+                    AND (
+                        EXTRACT(HOUR FROM timestamp) BETWEEN 10 AND 17
+                        OR (EXTRACT(HOUR FROM timestamp) = 18 AND EXTRACT(MINUTE FROM timestamp) <= 10)
+                    )
                 ''', (seven_days_ago,))
             else:
                 cursor.execute('''
@@ -1541,6 +1578,8 @@ class GMSTRPredictionSystem:
                     FROM predictions
                     WHERE is_correct IS NOT NULL
                     AND datetime(created_at) > datetime('now', '-7 days')
+                    AND strftime('%w', timestamp) BETWEEN '1' AND '5'
+                    AND strftime('%H:%M', timestamp) BETWEEN '10:00' AND '18:10'
                 ''')
             
             stats = cursor.fetchone()
@@ -1577,15 +1616,15 @@ class GMSTRPredictionSystem:
 
             factors = {}
 
-            # 1. Gumus (SI=F, XAGUSD=X, SL=F)
-            silver_symbols = ["SI=F", "XAGUSD=X", "SL=F"]
-            silver_change = None
+            # 1. Gumus (yfinance + currency-api fallback)
             silver_current = None
             silver_at_close = None
-            for sym in silver_symbols:
+            silver_change = None
+            
+            # 1a. yfinance dene
+            for sym in ["SI=F", "XAGUSD=X", "SL=F"]:
                 try:
-                    silver = yf.Ticker(sym)
-                    silver_data = silver.history(period="7d", interval="1h")
+                    silver_data = yf.Ticker(sym).history(period="7d", interval="1h")
                     if silver_data.empty or len(silver_data) < 2:
                         continue
                     silver_current = float(silver_data['Close'].iloc[-1])
@@ -1602,10 +1641,34 @@ class GMSTRPredictionSystem:
                     break
                 except Exception:
                     continue
+            
+            # 1b. yfinance basarisiz olduysa currency-api fallback (anlik fiyat)
+            if silver_current is None:
+                try:
+                    r = requests.get('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json', timeout=10)
+                    data = r.json()
+                    xag_per_usd = data['usd']['xag']
+                    silver_current = 1.0 / xag_per_usd
+                    
+                    # Kapanis icin dunu dene
+                    try:
+                        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+                        r2 = requests.get(f'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@{yesterday}/v1/currencies/usd.json', timeout=10)
+                        data2 = r2.json()
+                        xag_per_usd_yest = data2['usd']['xag']
+                        silver_at_close = 1.0 / xag_per_usd_yest
+                        silver_change = ((silver_current - silver_at_close) / silver_at_close) * 100
+                        logger.info(f"Gumus (currency-api): {silver_change:.2f}% | now=${silver_current:.2f} close=${silver_at_close:.2f}")
+                    except Exception as e2:
+                        logger.warning(f"Gumus kapanis alinamadi, sadece anlik: {e2}")
+                        silver_at_close = silver_current
+                        silver_change = 0.0
+                except Exception as e:
+                    logger.warning(f"Gumus verisi alinamadi (tum kaynaklar): {e}")
+            
             if silver_change is not None:
                 factors['silver'] = silver_change
             else:
-                logger.warning("Gumus verisi alinamadi (tum semboller denendi)")
                 factors['silver'] = 0
 
             # Fiyat bilgilerini sakla
@@ -2162,6 +2225,8 @@ class GMSTRPredictionSystem:
 
 # Flask API + SocketIO
 app = Flask(__name__)
+app.jinja_env.auto_reload = True
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 try:
     from flask_socketio import SocketIO
     socketio = SocketIO(app, cors_allowed_origins="*")
@@ -2175,8 +2240,11 @@ swing_predictor = GMSTRSwingPredictor() if SWING_AVAILABLE else None
 
 @app.route('/')
 def dashboard():
-    """Dashboard ana sayfa"""
-    return render_template('dashboard.html')
+    """Dashboard ana sayfa - cache bypass, direkt dosya oku"""
+    import os
+    template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', 'dashboard.html')
+    with open(template_path, 'r', encoding='utf-8') as f:
+        return f.read()
 
 @app.route('/api/predictions')
 def get_predictions():
@@ -2236,8 +2304,13 @@ def get_model_info():
             with open('model_info.json', 'r') as f:
                 info = json.load(f)
             # Dashboard compatibility: accuracy field ekle
-            if 'ensemble_accuracy' in info and 'accuracy' not in info:
-                info['accuracy'] = info['ensemble_accuracy']
+            if 'accuracy' not in info:
+                if 'filtered_accuracy' in info:
+                    info['accuracy'] = info['filtered_accuracy']
+                elif 'lgbm_accuracy' in info:
+                    info['accuracy'] = info['lgbm_accuracy']
+                elif 'ensemble_accuracy' in info:
+                    info['accuracy'] = info['ensemble_accuracy']
             return jsonify(info)
         else:
             return jsonify({
@@ -2451,6 +2524,14 @@ def get_market_data():
 def force_validate():
     """Manuel validasyon: tum bekleyen tahminleri hemen kontrol et"""
     try:
+        now = datetime.now()
+        day = now.weekday()
+        hour = now.hour
+        minute = now.minute
+        is_weekend = day >= 5
+        is_after_hours = (hour > 18) or (hour == 18 and minute >= 10) or (hour < 10)
+        if is_weekend or is_after_hours:
+            return jsonify({'error': 'Borsa kapali, manuel validasyon yapilamaz'}), 403
         prediction_system.update_predictions()
         conn = prediction_system.get_db_connection()
         cursor = conn.cursor()
