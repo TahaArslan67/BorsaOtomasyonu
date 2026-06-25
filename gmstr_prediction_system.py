@@ -8,7 +8,7 @@ import numpy as np
 import yfinance as yf
 import requests
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import schedule
 import time as time_module
 import logging
