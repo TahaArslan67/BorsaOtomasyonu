@@ -372,7 +372,7 @@
                 <span id="marketStatusDetail"></span>
             </div>
             
-            <div id="premarketCard" style="display: none; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; padding: 20px; margin-bottom: 20px; color: white; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
+            <div id="premarketCard" style="display: block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; padding: 20px; margin-bottom: 20px; color: white; box-shadow: 0 10px 30px rgba(0,0,0,0.2);">
                 <h3 style="margin-bottom: 15px; font-size: 1.4rem;">🌙 Pre-Market Gümüş Sinyali</h3>
                 <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: center;">
                     <div>
@@ -503,15 +503,6 @@
                 const card = document.getElementById('premarketCard');
                 
                 if (data && !data.error) {
-                    // Sadece borsa kapalıyken göster
-                    const now = new Date();
-                    const hour = now.getHours();
-                    const isAfterHours = (hour > 18 || (hour === 18 && now.getMinutes() >= 10) || hour < 9);
-                    
-                    if (isAfterHours || data.signal === 'HOLD') {
-                        // Sinyal var ama borsa açık - gizle
-                    }
-                    
                     card.style.display = 'block';
                     
                     const signalColors = {

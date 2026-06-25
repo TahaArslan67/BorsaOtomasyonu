@@ -236,7 +236,7 @@ class GMSTRPredictionSystem:
     def fetch_gmstr_data(self, period="2y"):
         """GMSTR verilerini çek (cache'li)"""
         now = time_module.time()
-        if self._gmstr_cache and self._gmstr_cache_time and (now - self._gmstr_cache_time) < self._cache_ttl:
+        if self._gmstr_cache is not None and self._gmstr_cache_time and (now - self._gmstr_cache_time) < self._cache_ttl:
             logger.info("GMSTR verisi cache'den alındı")
             return self._gmstr_cache
         
@@ -276,7 +276,7 @@ class GMSTRPredictionSystem:
     def fetch_market_data(self, period="2y"):
         """Piyasa verilerini çek - Cache'li"""
         now = time_module.time()
-        if self._market_cache and self._market_cache_time and (now - self._market_cache_time) < self._cache_ttl:
+        if self._market_cache is not None and self._market_cache_time and (now - self._market_cache_time) < self._cache_ttl:
             logger.info("Piyasa verisi cache'den alındı")
             return self._market_cache
         
