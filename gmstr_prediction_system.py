@@ -1421,7 +1421,17 @@ def get_model_info():
                 info = json.load(f)
             return jsonify(info)
         else:
-            return jsonify({'error': 'Model henüz eğitilmemiş'}), 404
+            # Dosya yoksa default değer döndür
+            return jsonify({
+                'status': 'not_trained',
+                'message': 'Model henüz eğitilmemiş',
+                'last_trained': '-',
+                'accuracy': 0,
+                'test_samples': 0,
+                'train_samples': 0,
+                'threshold': 0.60,
+                'features_used': 0
+            })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

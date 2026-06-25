@@ -480,18 +480,30 @@
                 
                 if (data && !data.error) {
                     card.style.display = 'block';
-                    document.getElementById('modelAccuracy').textContent = (data.accuracy * 100).toFixed(1) + '%';
-                    document.getElementById('modelAccuracy').style.color = data.accuracy >= 0.60 ? '#fff' : '#ffeb3b';
-                    document.getElementById('modelLastTrained').textContent = data.last_trained || '-';
-                    document.getElementById('modelTrainSamples').textContent = data.train_samples || '-';
-                    document.getElementById('modelTestSamples').textContent = data.test_samples || '-';
-                    document.getElementById('modelFeatures').textContent = data.features_used || '-';
+                    
+                    if (data.status === 'not_trained') {
+                        document.getElementById('modelAccuracy').textContent = 'Eğitilmedi';
+                        document.getElementById('modelAccuracy').style.color = '#ffeb3b';
+                        document.getElementById('modelLastTrained').textContent = '-';
+                        document.getElementById('modelTrainSamples').textContent = '-';
+                        document.getElementById('modelTestSamples').textContent = '-';
+                        document.getElementById('modelFeatures').textContent = '-';
+                    } else {
+                        const acc = data.accuracy !== undefined ? data.accuracy : 0;
+                        document.getElementById('modelAccuracy').textContent = (acc * 100).toFixed(1) + '%';
+                        document.getElementById('modelAccuracy').style.color = acc >= 0.60 ? '#fff' : '#ffeb3b';
+                        document.getElementById('modelLastTrained').textContent = data.last_trained || '-';
+                        document.getElementById('modelTrainSamples').textContent = data.train_samples || '-';
+                        document.getElementById('modelTestSamples').textContent = data.test_samples || '-';
+                        document.getElementById('modelFeatures').textContent = data.features_used || '-';
+                    }
                 } else {
                     card.style.display = 'none';
                 }
             } catch (error) {
                 console.error('Model bilgisi yüklenemedi:', error);
-                document.getElementById('modelInfoCard').style.display = 'none';
+                const card = document.getElementById('modelInfoCard');
+                if (card) card.style.display = 'none';
             }
         }
         
@@ -521,21 +533,27 @@
                         'STRONG_SELL': 'GÜÇLÜ SAT 📉'
                     };
                     
-                    document.getElementById('premarketSignal').textContent = signalTexts[data.signal] || data.signal;
+                    // Güvenli değer okuma - undefined/null kontrolü
+                    const safeText = (val, fallback) => val !== undefined && val !== null ? val : fallback;
+                    const safeNum = (val) => val !== undefined && val !== null ? parseFloat(val).toFixed(2) : '-';
+                    const safePct = (val) => val !== undefined && val !== null ? (parseFloat(val) * 100).toFixed(1) + '%' : '-%';
+                    
+                    document.getElementById('premarketSignal').textContent = signalTexts[data.signal] || safeText(data.signal, '-');
                     document.getElementById('premarketSignal').style.color = signalColors[data.signal] || '#fff';
-                    document.getElementById('premarketDirection').textContent = `Yön: ${data.direction}`;
-                    document.getElementById('premarketGMSTRTime').textContent = data.gmstr_close_time || 'Bilinmiyor';
-                    document.getElementById('premarketGMSTR').textContent = data.gmstr_last_close.toFixed(2);
-                    document.getElementById('premarketSilverAtClose').textContent = data.silver_at_close ? data.silver_at_close.toFixed(2) : '-';
-                    document.getElementById('premarketSilverCurrent').textContent = data.silver_current ? data.silver_current.toFixed(2) : '-';
+                    document.getElementById('premarketDirection').textContent = `Yön: ${safeText(data.direction, '-')}`;
+                    document.getElementById('premarketGMSTRTime').textContent = safeText(data.gmstr_close_time, 'Bilinmiyor');
+                    document.getElementById('premarketGMSTR').textContent = safeNum(data.gmstr_last_close);
+                    document.getElementById('premarketSilverAtClose').textContent = safeNum(data.silver_at_close);
+                    document.getElementById('premarketSilverCurrent').textContent = safeNum(data.silver_current);
                     
-                    const changeSign = data.silver_change_pct >= 0 ? '+' : '';
-                    document.getElementById('premarketSilverChange').textContent = `${changeSign}${data.silver_change_pct.toFixed(2)}%`;
-                    document.getElementById('premarketSilverChange').style.color = data.silver_change_pct >= 0 ? '#2ecc71' : '#e74c3c';
+                    const changePct = data.silver_change_pct !== undefined ? parseFloat(data.silver_change_pct) : 0;
+                    const changeSign = changePct >= 0 ? '+' : '';
+                    document.getElementById('premarketSilverChange').textContent = `${changeSign}${changePct.toFixed(2)}%`;
+                    document.getElementById('premarketSilverChange').style.color = changePct >= 0 ? '#2ecc71' : '#e74c3c';
                     
-                    document.getElementById('premarketTarget').textContent = data.target_price.toFixed(2);
-                    document.getElementById('premarketConfidence').textContent = `${(data.confidence * 100).toFixed(1)}%`;
-                    document.getElementById('premarketReason').textContent = data.reason;
+                    document.getElementById('premarketTarget').textContent = safeNum(data.target_price);
+                    document.getElementById('premarketConfidence').textContent = safePct(data.confidence);
+                    document.getElementById('premarketReason').textContent = safeText(data.reason, '-');
                 } else {
                     // Hata olsa bile kartı göster, placeholder ver
                     card.style.display = 'block';
@@ -546,7 +564,8 @@
             } catch (error) {
                 console.error('Pre-market sinyali yüklenemedi:', error);
                 // Hata olsa bile kartı göster
-                card.style.display = 'block';
+                const card = document.getElementById('premarketCard');
+                if (card) card.style.display = 'block';
                 document.getElementById('premarketSignal').textContent = 'Hata';
                 document.getElementById('premarketReason').textContent = 'Bağlantı hatası, tekrar deneniyor...';
             }
