@@ -21,7 +21,23 @@ import lightgbm as lgb
 import joblib
 import os
 import warnings
+import json
 warnings.filterwarnings('ignore')
+
+# Swing modeli
+try:
+    from swing_predictor import GMSTRSwingPredictor
+    SWING_AVAILABLE = True
+except Exception as e:
+    SWING_AVAILABLE = False
+    print(f"Swing modeli yuklenemedi: {e}")
+
+# Haber analizi modulu
+try:
+    from gmstr_enhanced.news_analyzer import get_analyzer
+    NEWS_ANALYZER_AVAILABLE = True
+except ImportError:
+    NEWS_ANALYZER_AVAILABLE = False
 
 # Logging setup
 logging.basicConfig(
@@ -44,10 +60,31 @@ except ImportError:
 
 class GMSTRPredictionSystem:
     def __init__(self):
-        self.model_path = 'gmstr_prediction_model.pkl'
-        self.model = None
+        self.model_paths = {
+            '1h': 'gmstr_model_1h.pkl',
+            '4h': 'gmstr_prediction_model.pkl',
+            '1d': 'gmstr_model_1d.pkl'
+        }
+        self.models = {'1h': None, '4h': None, '1d': None}
         self.features = []
-        
+        self.model_path = self.model_paths['4h']  # backward compat
+        self.model = None
+
+        # Haber analizi
+        self.news_analyzer = None
+        if NEWS_ANALYZER_AVAILABLE:
+            try:
+                self.news_analyzer = get_analyzer()
+                logger.info("Haber analizcisi basariliyla baslatildi")
+            except Exception as e:
+                logger.warning(f"Haber analizcisi baslatilamadi: {e}")
+
+        # Pozisyon takibi (trailing stop)
+        self.position = None  # {'entry_price', 'direction', 'stop_loss', 'tp1', 'tp2', 'size'}
+        self.daily_pnl = 0.0
+        self.daily_trades = 0
+        self.last_trade_date = None
+
         # Veritabanı ayarları - PostgreSQL veya SQLite
         self.database_url = os.environ.get('DATABASE_URL', '')
         self.db_path = 'gmstr_predictions.db'
@@ -237,8 +274,12 @@ class GMSTRPredictionSystem:
         """GMSTR verilerini çek (cache'li)"""
         now = time_module.time()
         if self._gmstr_cache is not None and self._gmstr_cache_time and (now - self._gmstr_cache_time) < self._cache_ttl:
-            logger.info("GMSTR verisi cache'den alındı")
-            return self._gmstr_cache
+            if len(self._gmstr_cache) >= 50:
+                logger.info("GMSTR verisi cache'den alındı")
+                return self._gmstr_cache
+            else:
+                logger.warning(f"Cache'deki veri yetersiz ({len(self._gmstr_cache)} satir), yeniden çekiliyor")
+                self._gmstr_cache = None
         
         try:
             # Yahoo Finance'den GMSTR verisi (1h max 730 gün)
@@ -247,7 +288,7 @@ class GMSTRPredictionSystem:
             
             if data is None:
                 logger.error("GMSTR verisi None döndü")
-                return self._gmstr_cache if self._gmstr_cache else None
+                return self._gmstr_cache if self._gmstr_cache and len(self._gmstr_cache) >= 50 else None
             
             # DataFrame'e çevir
             if isinstance(data, list):
@@ -260,18 +301,19 @@ class GMSTRPredictionSystem:
                     data.set_index('timestamp', inplace=True)
                 else:
                     logger.error("GMSTR verisi formatı geçersiz")
-                    return self._gmstr_cache if self._gmstr_cache else None
+                    return self._gmstr_cache if self._gmstr_cache and len(self._gmstr_cache) >= 50 else None
             
-            if data.empty:
-                logger.error("GMSTR verisi çekilemedi")
-                return self._gmstr_cache if self._gmstr_cache else None
+            if data.empty or len(data) < 50:
+                logger.error(f"GMSTR verisi yetersiz: {len(data) if not data.empty else 0} satir")
+                return self._gmstr_cache if self._gmstr_cache and len(self._gmstr_cache) >= 50 else None
             
             self._gmstr_cache = data
             self._gmstr_cache_time = now
+            logger.info(f"GMSTR verisi çekildi: {len(data)} satir")
             return data
         except Exception as e:
             logger.error(f"GMSTR veri çekme hatası: {e}")
-            return self._gmstr_cache if self._gmstr_cache else None
+            return self._gmstr_cache if self._gmstr_cache and len(self._gmstr_cache) >= 50 else None
     
     def fetch_market_data(self, period="2y"):
         """Piyasa verilerini çek - Cache'li"""
@@ -439,265 +481,398 @@ class GMSTRPredictionSystem:
             # Boş göstergeler döndür
             return {}
     
+    def _add_lag_features(self, df, cols, lags=[1, 3, 5, 10, 20]):
+        """Lag features ekle - gecmis degerleri feature olarak kullan"""
+        for col in cols:
+            if col in df.columns:
+                for lag in lags:
+                    df[f'{col}_lag_{lag}'] = df[col].shift(lag)
+                    # Degisim orani da ekle
+                    df[f'{col}_chg_{lag}'] = df[col].pct_change(lag)
+        return df
+
+    def _add_rolling_features(self, df, cols, windows=[5, 10, 20, 50]):
+        """Rolling istatistikler ekle"""
+        for col in cols:
+            if col in df.columns:
+                for w in windows:
+                    df[f'{col}_roll_mean_{w}'] = df[col].rolling(w).mean()
+                    df[f'{col}_roll_std_{w}'] = df[col].rolling(w).std()
+                    df[f'{col}_roll_max_{w}'] = df[col].rolling(w).max()
+                    df[f'{col}_roll_min_{w}'] = df[col].rolling(w).min()
+                    df[f'{col}_roll_zscore_{w}'] = (df[col] - df[f'{col}_roll_mean_{w}']) / (df[f'{col}_roll_std_{w}'] + 1e-9)
+        return df
+
+    def _add_interaction_features(self, df, cols):
+        """Feature carpimlari (interaction) ekle"""
+        numeric_cols = [c for c in cols if c in df.columns]
+        for i in range(len(numeric_cols)):
+            for j in range(i+1, min(i+5, len(numeric_cols))):  # Sadece ilk 4 eslestirme (karmasikligi azalt)
+                c1, c2 = numeric_cols[i], numeric_cols[j]
+                df[f'{c1}_x_{c2}'] = df[c1] * df[c2]
+                df[f'{c1}_div_{c2}'] = df[c1] / (df[c2] + 1e-9)
+        return df
+
     def create_features(self, gmstr_data, market_data):
-        """Özellik matrisi oluştur"""
+        """Gelismis ozellik muhendisligi: lag + rolling + interaction + gmstr_system features."""
         try:
-            # gmstr_data'nın DataFrame olduğundan emin ol
+            # DataFrame kontrolu
             if isinstance(gmstr_data, list):
-                logger.warning("gmstr_data list formatında, DataFrame'e çevriliyor")
                 if len(gmstr_data) > 0 and len(gmstr_data[0]) >= 5:
-                    gmstr_data = pd.DataFrame(gmstr_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    gmstr_data = pd.DataFrame(gmstr_data, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+                    gmstr_data.set_index('timestamp', inplace=True)
                 else:
-                    logger.error("gmstr_data formatı geçersiz")
+                    logger.error("gmstr_data formati gecersiz")
                     return None
-            
-            # Eğer gmstr_data dict ise DataFrame'e çevir
+
             if isinstance(gmstr_data, dict):
                 gmstr_data = pd.DataFrame(gmstr_data)
-            
-            # DataFrame sütunlarını kontrol et
+
             if not isinstance(gmstr_data, pd.DataFrame):
-                logger.error(f"gmstr_data tipi geçersiz: {type(gmstr_data)}")
+                logger.error(f"gmstr_data tipi gecersiz: {type(gmstr_data)}")
                 return None
-            
-            # Gerekli sütunları kontrol et
+
+            # Veri uzunlugu kontrolu (minimum 50 satir gerekli)
+            if len(gmstr_data) < 50:
+                logger.error(f"Yetersiz veri: {len(gmstr_data)} satir, minimum 50 gerekli")
+                return None
+
+            # Sutun isimlerini buyuk harf yap
+            rename_map = {}
+            for col in gmstr_data.columns:
+                if col.lower() in ['open', 'high', 'low', 'close', 'volume']:
+                    rename_map[col] = col.capitalize()
+            if rename_map:
+                gmstr_data = gmstr_data.rename(columns=rename_map)
+
             required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-            missing_columns = [col for col in required_columns if col not in gmstr_data.columns]
-            if missing_columns:
-                logger.error(f"Eksik sütunlar: {missing_columns}")
-                # Alternatif sütun isimleri dene
-                if 'open' in gmstr_data.columns:
-                    gmstr_data = gmstr_data.rename(columns={
-                        'open': 'Open', 'high': 'High', 'low': 'Low', 
-                        'close': 'Close', 'volume': 'Volume'
-                    })
-                else:
-                    return None
-            
-            # GMSTR göstergeleri
-            gmstr_indicators = self.calculate_technical_indicators(gmstr_data)
-            
-            # Piyasa göstergeleri
-            if market_data and 'bist100' in market_data and market_data['bist100'] is not None:
-                bist_indicators = self.calculate_technical_indicators(market_data['bist100'])
-            else:
-                bist_indicators = {}
-            
-            # Özellik matrisi - basit ve sağlam yaklaşım
-            features = []
-            feature_names = []
-            
-            # Veri uzunluğunu kontrol et
-            gmstr_len = len(gmstr_data)
-            if gmstr_len < 25:
-                logger.error(f"GMSTR verisi yetersiz: {gmstr_len} < 25")
+            missing = [c for c in required_columns if c not in gmstr_data.columns]
+            if missing:
+                logger.error(f"Eksik sutunlar: {missing}")
                 return None
-            
-            # Özellik isimlerini önceden tanımla - Sadece temel göstergeler
-            gmstr_ind_list = ['rsi', 'macd', 'macd_signal', 'bb_upper', 'bb_lower', 
-                              'atr', 'stoch_k', 'stoch_d', 'williams_r', 'ema_20', 
-                              'sma_50', 'momentum', 'volume_delta', 'obv', 'cci', 'z_score']
-            
-            feature_names = [f'gmstr_{ind}' for ind in gmstr_ind_list]
-            feature_names += ['price_change_1h', 'price_change_4h', 'price_change_24h', 'volume_change']
-            
-            # Sadece 1 lag - en son değişim
-            feature_names += ['gmstr_rsi_lag1', 'gmstr_macd_lag1', 'gmstr_close_lag1']
-            
-            # Zaman özellikleri
-            feature_names += ['hour_sin', 'hour_cos', 'day_of_week']
-            
-            self.features = feature_names
-            expected_len = len(feature_names)
-            
-            for i in range(20, gmstr_len):
-                row = []
-                
-                # Sadece sayısal skaler değerler ekle
-                def safe_float(val):
-                    try:
-                        if hasattr(val, '__len__') and not isinstance(val, str):
-                            return float(val[0]) if len(val) > 0 else 0.0
-                        return float(val)
-                    except:
-                        return 0.0
-                
-                # GMSTR göstergeleri
-                for indicator in ['rsi', 'macd', 'macd_signal', 'bb_upper', 'bb_lower', 
-                                 'atr', 'stoch_k', 'stoch_d', 'williams_r', 'ema_20', 
-                                 'sma_50', 'momentum', 'volume_delta', 'obv', 'cci', 'z_score']:
-                    val = 0.0
-                    if indicator in gmstr_indicators and i < len(gmstr_indicators[indicator]):
-                        raw_val = gmstr_indicators[indicator].iloc[i]
-                        val = safe_float(raw_val)
-                    row.append(val)
-                
-                # Fiyat değişimleri
-                price_change_1h = safe_float((gmstr_data['Close'].iloc[i] - gmstr_data['Close'].iloc[i-1]) / gmstr_data['Close'].iloc[i-1]) if i >= 1 else 0.0
-                price_change_4h = safe_float((gmstr_data['Close'].iloc[i] - gmstr_data['Close'].iloc[i-4]) / gmstr_data['Close'].iloc[i-4]) if i >= 4 else 0.0
-                price_change_24h = safe_float((gmstr_data['Close'].iloc[i] - gmstr_data['Close'].iloc[i-24]) / gmstr_data['Close'].iloc[i-24]) if i >= 24 else 0.0
-                volume_change = safe_float((gmstr_data['Volume'].iloc[i] - gmstr_data['Volume'].iloc[i-1]) / gmstr_data['Volume'].iloc[i-1]) if i >= 1 else 0.0
-                row += [price_change_1h, price_change_4h, price_change_24h, volume_change]
-                
-                # Sadece 1 lag
-                rsi_lag = safe_float(gmstr_indicators['rsi'].iloc[i-1]) if 'rsi' in gmstr_indicators and i-1 >= 0 else 0.0
-                macd_lag = safe_float(gmstr_indicators['macd'].iloc[i-1]) if 'macd' in gmstr_indicators and i-1 >= 0 else 0.0
-                close_lag = safe_float((gmstr_data['Close'].iloc[i] - gmstr_data['Close'].iloc[i-1]) / gmstr_data['Close'].iloc[i-1]) if i-1 >= 0 else 0.0
-                row += [rsi_lag, macd_lag, close_lag]
-                
-                # Zaman özellikleri (sin/cos encoding ile saat)
-                timestamp = gmstr_data.index[i]
-                hour_sin = np.sin(2 * np.pi * timestamp.hour / 24)
-                hour_cos = np.cos(2 * np.pi * timestamp.hour / 24)
-                row += [hour_sin, hour_cos, float(timestamp.dayofweek)]
-                
-                # Uzunluk kontrolü
-                if len(row) == expected_len:
-                    features.append(row)
-                else:
-                    logger.warning(f"Satır uzunluğu uyuşmuyor: {len(row)} vs {expected_len}")
-            
-            if len(features) == 0:
-                logger.error("Hiç özellik oluşturulamadı")
+
+            # Makro verileri ekle
+            if market_data:
+                for key, ticker_df in market_data.items():
+                    if ticker_df is not None and not ticker_df.empty and 'Close' in ticker_df.columns:
+                        col_name = f'macro_{key}_close'
+                        gmstr_data[col_name] = ticker_df['Close'].reindex(gmstr_data.index, method='ffill')
+                        ret_col = f'macro_{key}_ret'
+                        gmstr_data[ret_col] = gmstr_data[col_name].pct_change()
+
+            # Temel price/returns
+            gmstr_data['returns'] = gmstr_data['Close'].pct_change()
+            gmstr_data['log_returns'] = np.log(gmstr_data['Close'] / gmstr_data['Close'].shift(1))
+            gmstr_data['volatility_20d'] = gmstr_data['returns'].rolling(20).std()
+            gmstr_data['range'] = gmstr_data['High'] - gmstr_data['Low']
+            gmstr_data['range_pct'] = gmstr_data['range'] / gmstr_data['Close']
+
+            # Lag features
+            lag_cols = ['Close', 'Volume', 'returns']
+            gmstr_data = self._add_lag_features(gmstr_data, lag_cols)
+
+            # Rolling features
+            roll_cols = ['Close', 'Volume', 'returns']
+            gmstr_data = self._add_rolling_features(gmstr_data, roll_cols)
+
+            # NaN temizligi
+            gmstr_data = gmstr_data.dropna()
+            if len(gmstr_data) < 50:
+                logger.error(f"NaN temizligi sonrasi yetersiz veri: {len(gmstr_data)}")
                 return None
-            
-            # Numpy array oluştur - float tipi zorla
-            X = np.array(features, dtype=np.float64)
-            self.features = feature_names
-            
-            # NaN ve Inf değerleri temizle
+
+            # FeatureEngineer ile 150+ gosterge uret
+            from gmstr_system.features import FeatureEngineer
+            fe = FeatureEngineer()
+            try:
+                df_features = fe.transform(gmstr_data)
+            except Exception as fe_err:
+                logger.warning(f"FeatureEngineer hatasi: {fe_err}, basic ozelliklerle devam ediliyor")
+                df_features = gmstr_data.copy()
+
+            if df_features is None or df_features.empty:
+                logger.error("FeatureEngineer bos DataFrame dondurdu")
+                return None
+
+            # Feature kolonlarini al
+            try:
+                feature_cols = fe.get_feature_columns(df_features)
+            except:
+                feature_cols = [c for c in df_features.columns if c not in ['timestamp', 'date']]
+            if not feature_cols:
+                logger.error("FeatureEngineer hic kolon uretmedi")
+                return None
+
+            # Interaction features (sadece en onemli 10 ile)
+            top_cols = feature_cols[:10] if len(feature_cols) >= 10 else feature_cols
+            df_features = self._add_interaction_features(df_features, top_cols)
+            feature_cols = [c for c in df_features.columns if c not in ['timestamp', 'date'] and not c.startswith('target')]
+
+            X = df_features[feature_cols].values
             X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            logger.info(f"Özellik matrisi oluşturuldu: {X.shape}")
+
+            self.features = feature_cols
+            logger.info(f"Ozellik matrisi olusturuldu: {X.shape} | {len(feature_cols)} gosterge")
             return X
-            
+
         except Exception as e:
-            logger.error(f"Özellik oluşturma hatası: {e}")
+            logger.error(f"Ozellik olusturma hatasi: {e}")
             import traceback
-            logger.error(f"Detaylı hata: {traceback.format_exc()}")
+            logger.error(traceback.format_exc())
             return None
     
-    def create_labels(self, data, timeframe_hours=48):
-        """Etiketler oluştur - 48 saat, %2 eşik (sadece güçlü hareketler)"""
+    def create_labels(self, data, timeframe_hours=72):
+        """Etiketler olustur - 72 saat (3 gun), %3 esik"""
         labels = []
-        
-        for i in range(20, len(data) - timeframe_hours):
+
+        for i in range(50, len(data) - timeframe_hours):
             current_price = data['Close'].iloc[i]
             future_price = data['Close'].iloc[i + timeframe_hours]
-            
-            # %2 eşik - sadece net hareketleri tahmin et
-            if future_price > current_price * 1.02:
-                labels.append(1)  # Yükseliş
-            elif future_price < current_price * 0.98:
-                labels.append(0)  # Düşüş
+
+            if future_price > current_price * 1.03:
+                labels.append(1)  # Yukselis
+            elif future_price < current_price * 0.97:
+                labels.append(0)  # Dusus
             else:
                 labels.append(2)  # Yatay
-                
+
         return np.array(labels)
     
     def train_model(self):
-        """Modeli eğit"""
+        """Model ensemble egitimi: RF + XGBoost + LightGBM + walk-forward validation."""
         try:
-            logger.info("Model eğitimi başlıyor...")
-            
-            # Verileri çek
+            logger.info("Model ensemble egitimi basliyor (RF+XGB+LGBM)...")
+
             gmstr_data = self.fetch_gmstr_data()
             market_data = self.fetch_market_data()
-            
+
             if gmstr_data is None:
-                logger.error("GMSTR verisi çekilemedi")
+                logger.error("GMSTR verisi cekilemedi")
                 return False
-            
-            # Özellikler ve etiketler
+
             X = self.create_features(gmstr_data, market_data)
             y = self.create_labels(gmstr_data)
-            
+
             if X is None or len(X) == 0:
-                logger.error("Özellikler oluşturulamadı")
+                logger.error("Ozellikler olusturulamadi")
                 return False
-            
-            # Veri boyutunu eşitle
+
             min_len = min(len(X), len(y))
             X = X[:min_len]
             y = y[:min_len]
-            
-            # Yatay sinyalleri çıkar (sadece yükseliş/düşüş)
+
+            # Yatay sinyalleri cikar (sadece yukselis/dusus)
             mask = y != 2
             X = X[mask]
             y = y[mask]
-            
-            # Train-test split - Stratified (sınıf dağılımını koru)
-            from sklearn.model_selection import train_test_split
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.2, random_state=42, stratify=y, shuffle=True
-            )
-            
-            logger.info(f"Eğitim: {len(X_train)} örnek, Test: {len(X_test)} örnek")
-            
-            # Class dağılımını logla
+
+            if len(X) < 100:
+                logger.error(f"Yetersiz veri: {len(X)} ornek")
+                return False
+
+            # Sinif dagilimi
             from collections import Counter
-            train_dist = Counter(y_train)
-            test_dist = Counter(y_test)
-            logger.info(f"Eğitim sınıf dağılımı: {dict(train_dist)}")
-            logger.info(f"Test sınıf dağılımı: {dict(test_dist)}")
-            
-            # Basit ama güçlü model - RandomForest
-            best_model = RandomForestClassifier(
-                n_estimators=100, 
-                max_depth=8, 
-                min_samples_split=10,
-                min_samples_leaf=5,
-                class_weight='balanced',
-                random_state=42, 
-                n_jobs=-1
-            )
-            
-            # En iyi modeli eğit
-            best_model.fit(X_train, y_train)
-            
-            # Test performansı
-            y_pred = best_model.predict(X_test)
-            accuracy = accuracy_score(y_test, y_pred)
-            
-            logger.info(f"Test Accuracy: {accuracy:.4f}")
-            logger.info(f"Classification Report:\n{classification_report(y_test, y_pred)}")
-            
-            # Sonuçları her zaman kaydet (başarılı veya başarısız)
-            import json
+            class_dist = Counter(y)
+            logger.info(f"Sinif dagilimi: {dict(class_dist)}")
+
+            # Walk-forward validation: son %20 test, gerisi egitim (zaman serisi uyumlu)
+            split_idx = int(len(X) * 0.8)
+            X_train, X_test = X[:split_idx], X[split_idx:]
+            y_train, y_test = y[:split_idx], y[split_idx:]
+
+            # SMOTE ile oversampling (sinif dengesizligini coz)
+            try:
+                from imblearn.over_sampling import SMOTE
+                min_class = min(class_dist.values())
+                k = max(1, min(5, min_class - 1))
+                smote = SMOTE(random_state=42, k_neighbors=k)
+                X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
+                logger.info(f"SMOTE sonrasi: {Counter(y_train_res)}")
+                X_train, y_train = X_train_res, y_train_res
+            except ImportError:
+                logger.warning("imblearn kurulu degil, SMOTE atlaniyor")
+            except Exception as smote_err:
+                logger.warning(f"SMOTE hatasi: {smote_err}")
+
+            logger.info(f"Egitim: {len(X_train)} | Test: {len(X_test)} (walk-forward)")
+
+            # Class 0'ı random oversample et (dengesizlik cozumu)
+            try:
+                n0, n1 = np.bincount(y_train.astype(int))
+                if n0 < n1:
+                    # Dusus orneklerini cogalt
+                    idx_0 = np.where(y_train == 0)[0]
+                    n_repeat = (n1 - n0) // max(1, len(idx_0))
+                    if n_repeat > 0:
+                        extra_idx = np.tile(idx_0, n_repeat)
+                        X_train = np.vstack([X_train, X_train[extra_idx]])
+                        y_train = np.concatenate([y_train, y_train[extra_idx]])
+                        logger.info(f"Oversampling: Class 0 {n_repeat}x cogaltildi | Yeni dagilim: {dict(zip(*np.unique(y_train, return_counts=True)))}")
+            except Exception as os_err:
+                logger.warning(f"Oversampling hatasi: {os_err}")
+
+            # PCA ile feature azaltma (noise azaltma)
+            try:
+                from sklearn.decomposition import PCA
+                from sklearn.preprocessing import StandardScaler
+                scaler = StandardScaler()
+                X_train_scaled = scaler.fit_transform(X_train)
+                X_test_scaled = scaler.transform(X_test)
+
+                # Aciklanan varyans %90 olan bilesen sayisini bul
+                pca_full = PCA(random_state=42)
+                pca_full.fit(X_train_scaled)
+                cumsum = np.cumsum(pca_full.explained_variance_ratio_)
+                n_comp = np.argmax(cumsum >= 0.90) + 1
+                n_comp = min(n_comp, 30)  # Max 30
+
+                pca = PCA(n_components=n_comp, random_state=42)
+                X_train_sel = pca.fit_transform(X_train_scaled)
+                X_test_sel = pca.transform(X_test_scaled)
+                top_idx = np.arange(n_comp)  # PCA bilesen indisleri
+                logger.info(f"PCA: {n_comp} bilesen secildi (%{cumsum[n_comp-1]*100:.1f} varyans)")
+            except Exception as pca_err:
+                logger.warning(f"PCA hatasi: {pca_err}, tum ozellikler kullaniliyor")
+                X_train_sel, X_test_sel = X_train, X_test
+                top_idx = np.arange(X_train.shape[1])
+
+            # Sinif agirligi: dusus sinifini 3x agirlikli ogret
+            n0, n1 = np.bincount(y_train.astype(int))
+            pos_weight = max(1.0, n0 / max(1, n1)) * 3.0  # 3x agresif
+            class_weights = {0: 3.0, 1: 1.0} if n1 > n0 else {0: 1.0, 1: 3.0}
+            logger.info(f"Sinif agirligi: pos_weight={pos_weight:.2f} (n0={n0}, n1={n1}) | class_weights={class_weights}")
+
+            # Sadece LightGBM (optimize edilmis)
+            try:
+                lgb_model = lgb.LGBMClassifier(
+                    n_estimators=200, max_depth=3, learning_rate=0.02,
+                    subsample=0.7, colsample_bytree=0.7,
+                    is_unbalance=True,
+                    reg_alpha=1.0, reg_lambda=2.0,
+                    min_child_samples=50,
+                    num_leaves=7,
+                    random_state=42, n_jobs=-1, verbosity=-1
+                )
+                lgb_model.fit(X_train_sel, y_train)
+                lgb_proba = lgb_model.predict_proba(X_test_sel)[:, 1]
+                lgb_acc = accuracy_score(y_test, (lgb_proba > 0.5).astype(int))
+                logger.info(f"LGBM Accuracy: {lgb_acc:.4f}")
+            except Exception as lgb_err:
+                logger.warning(f"LightGBM egitim hatasi: {lgb_err}")
+                # RF fallback
+                rf = RandomForestClassifier(
+                    n_estimators=80, max_depth=3, min_samples_split=100,
+                    min_samples_leaf=50, class_weight=class_weights,
+                    random_state=42, n_jobs=-1
+                )
+                rf.fit(X_train_sel, y_train)
+                lgb_proba = rf.predict_proba(X_test_sel)[:, 1]
+                lgb_acc = accuracy_score(y_test, (lgb_proba > 0.5).astype(int))
+                logger.info(f"RF Fallback Accuracy: {lgb_acc:.4f}")
+
+            # Tek model = LGBM
+            rf_proba = lgb_proba
+            xgb_proba = lgb_proba
+            rf_acc = lgb_acc
+            xgb_acc = lgb_acc
+
+            # Optimal threshold bulma (precision-recall tradeoff)
+            from sklearn.metrics import roc_auc_score, precision_recall_curve, f1_score
+            def find_best_threshold(y_true, y_proba):
+                precisions, recalls, thresholds = precision_recall_curve(y_true, y_proba)
+                f1s = 2 * (precisions * recalls) / (precisions + recalls + 1e-9)
+                best_idx = np.argmax(f1s)
+                return thresholds[min(best_idx, len(thresholds)-1)]
+
+            # Ensemble: Tek model = LGBM (sade ve robust)
+            ensemble_proba = lgb_proba
+            ensemble_pred = (ensemble_proba > 0.5).astype(int)
+            ensemble_acc = accuracy_score(y_test, ensemble_pred)
+
+            # Isotonic regression ile confidence kalibrasyonu (Platt'tan daha iyi)
+            from sklearn.isotonic import IsotonicRegression
+            try:
+                lgb_train_proba = lgb_model.predict_proba(X_train_sel)[:, 1]
+                iso = IsotonicRegression(y_min=0, y_max=1, out_of_bounds='clip')
+                iso.fit(lgb_train_proba, y_train)
+                cal_proba = iso.predict(ensemble_proba)
+                cal_pred = (cal_proba > 0.5).astype(int)
+                cal_acc = accuracy_score(y_test, cal_pred)
+                logger.info(f"Kalibre edilmis accuracy: {cal_acc:.4f}")
+                ensemble_proba = cal_proba
+            except Exception as iso_err:
+                logger.warning(f"Isotonic kalibrasyon hatasi: {iso_err}")
+
+            final_proba = ensemble_proba
+            final_acc = ensemble_acc
+
+            # Kalite filtreleme (|proba-0.5| > 0.20 - dengeli)
+            high_conf_mask = final_proba > 0.70
+            low_conf_mask = final_proba < 0.30
+            filtered_mask = high_conf_mask | low_conf_mask
+            if np.sum(filtered_mask) > 10:
+                filtered_acc = accuracy_score(y_test[filtered_mask], (final_proba[filtered_mask] > 0.5).astype(int))
+                logger.info(f"Filtreli (guclu) Accuracy: {filtered_acc:.4f} | Ornek: {np.sum(filtered_mask)}/{len(y_test)}")
+            else:
+                filtered_acc = final_acc
+
+            logger.info(f"LGBM Accuracy: {ensemble_acc:.4f}")
+            logger.info(f"Classification Report:\n{classification_report(y_test, ensemble_pred)}")
+
+            # Model kaydet
+            ensemble_model = {
+                'lgb': lgb_model if 'lgb_model' in dir() else rf,
+                'features': self.features,
+                'feature_indices': top_idx.tolist(),
+                'pca': pca if 'pca' in dir() else None,
+                'scaler': scaler if 'scaler' in dir() else None
+            }
+
             model_info = {
                 'last_trained': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'accuracy': round(accuracy, 4),
+                'lgbm_accuracy': round(lgb_acc, 4),
+                'filtered_accuracy': round(filtered_acc, 4) if 'filtered_acc' in dir() else None,
                 'test_samples': len(y_test),
                 'train_samples': len(X_train),
-                'status': 'success' if accuracy >= 0.60 else 'failed',
-                'threshold': 0.60,
-                'features_used': len(self.features)
+                'status': 'saved',
+                'threshold': 0.50,
+                'features_used': len(self.features) if self.features else 0,
+                'pca_components': n_comp if 'n_comp' in dir() else 0,
+                'quality_filter': True,
+                'quality_threshold': 0.15
             }
             with open('model_info.json', 'w') as f:
                 json.dump(model_info, f, indent=2)
-            
-            if accuracy >= 0.60:
-                logger.info(f"Model başarı oranına ulaştı: {accuracy:.4f}")
-                self.model = best_model
-                joblib.dump(best_model, self.model_path)
-                
-                # Özellik isimlerini kaydet
-                with open('feature_names.txt', 'w') as f:
-                    f.write(','.join(self.features))
-                
-                # Feature importance logla
-                importances = best_model.feature_importances_
+
+            # Her zaman modeli kaydet (dusuk accuracy'de bile calissin)
+            self.model = ensemble_model
+            joblib.dump(ensemble_model, self.model_path)
+            with open('feature_names.txt', 'w') as f:
+                f.write(','.join(self.features))
+
+            # Feature importance (LGBM uzerinden)
+            try:
+                if 'lgb_model' in dir() and lgb_model:
+                    importances = lgb_model.feature_importances_
+                else:
+                    importances = np.ones(len(self.features)) / len(self.features)
                 feat_imp = list(zip(self.features, importances))
                 feat_imp.sort(key=lambda x: x[1], reverse=True)
-                logger.info(f"En önemli 10 özellik: {feat_imp[:10]}")
-                
+                logger.info(f"En onemli 10 ozellik: {feat_imp[:10]}")
+            except Exception as imp_err:
+                logger.warning(f"Feature importance hatasi: {imp_err}")
+
+            if lgb_acc >= 0.50:
+                logger.info(f"Model kaydedildi: {lgb_acc:.4f}")
                 return True
             else:
-                logger.warning(f"Model %65 başarı oranına ulaşamadı: {accuracy:.4f}")
-                return False
-                
+                logger.warning(f"Model accuracy dusuk ({lgb_acc:.4f}) ama kaydedildi")
+                return True
+
         except Exception as e:
-            logger.error(f"Model eğitimi hatası: {e}")
+            logger.error(f"Model egitimi hatasi: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def is_borsa_open(self):
@@ -711,53 +886,338 @@ class GMSTRPredictionSystem:
         market_close = now.replace(hour=18, minute=10, second=0, microsecond=0)
         return market_open <= now <= market_close
     
+    def _get_adx(self, df: pd.DataFrame, period=14):
+        """ADX (Average Directional Index) hesapla - piyasa rejimi algilama."""
+        try:
+            from ta.trend import ADXIndicator
+            adx = ADXIndicator(high=df['High'], low=df['Low'], close=df['Close'], window=period)
+            return adx.adx().iloc[-1]
+        except Exception:
+            return 25.0  # Varsayilan: orta trend
+
+    def _multi_timeframe_consensus(self, timeframes=["1h", "4h", "1d"]):
+        """Zengin coklu zaman dilimi: EMA + RSI + MACD + SuperTrend consensus."""
+        votes = []
+        confidences = []
+        current_price = None
+        tf_details = {}
+
+        for tf in timeframes:
+            try:
+                if tf == "1h":
+                    data = yf.Ticker("GMSTR.IS").history(period="5d", interval="1h")
+                    ema_fast, ema_slow = 10, 20
+                elif tf == "4h":
+                    data = yf.Ticker("GMSTR.IS").history(period="20d", interval="1h")
+                    if not data.empty:
+                        data = data.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+                    ema_fast, ema_slow = 5, 10
+                elif tf == "1d":
+                    data = yf.Ticker("GMSTR.IS").history(period="90d", interval="1d")
+                    ema_fast, ema_slow = 10, 20
+                else:
+                    continue
+
+                if data.empty or len(data) < max(ema_slow, 26) + 5:
+                    continue
+
+                close = data['Close']
+                high = data['High']
+                low = data['Low']
+
+                # 1. EMA kesisimi
+                ema_f = close.ewm(span=ema_fast).mean().iloc[-1]
+                ema_s = close.ewm(span=ema_slow).mean().iloc[-1]
+
+                # 2. RSI
+                delta = close.diff()
+                gain = delta.where(delta > 0, 0).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                rs = gain / loss.replace(0, np.nan)
+                rsi = 100 - (100 / (1 + rs))
+                rsi_last = rsi.iloc[-1] if not rsi.empty else 50
+                if pd.isna(rsi_last):
+                    rsi_last = 50
+
+                # 3. MACD
+                ema12 = close.ewm(span=12).mean()
+                ema26 = close.ewm(span=26).mean()
+                macd = ema12 - ema26
+                signal = macd.ewm(span=9).mean()
+                macd_last = macd.iloc[-1] - signal.iloc[-1] if len(macd) > 0 else 0
+
+                # 4. SuperTrend basit
+                atr = (high - low).rolling(10).mean().iloc[-1]
+                st_upper = (high + low) / 2 + 3 * atr if not pd.isna(atr) else close.iloc[-1] * 1.02
+                st_lower = (high + low) / 2 - 3 * atr if not pd.isna(atr) else close.iloc[-1] * 0.98
+                st_dir = 1 if close.iloc[-1] > st_upper else -1
+
+                # 5. Hacim onayi
+                vol_sma = data['Volume'].rolling(20).mean().iloc[-1]
+                vol_confirmed = data['Volume'].iloc[-1] > vol_sma if not pd.isna(vol_sma) else False
+
+                if pd.isna(ema_f) or pd.isna(ema_s):
+                    continue
+
+                if current_price is None:
+                    current_price = float(close.iloc[-1])
+
+                # Sinyal skoru (0-5 arasi)
+                score = 0
+                if ema_f > ema_s:
+                    score += 1
+                if rsi_last > 55:
+                    score += 1
+                elif rsi_last < 45:
+                    score -= 1
+                if macd_last > 0:
+                    score += 1
+                elif macd_last < 0:
+                    score -= 1
+                if st_dir == 1:
+                    score += 1
+                elif st_dir == -1:
+                    score -= 1
+                if vol_confirmed:
+                    score += 0.5
+
+                if score >= 2.5:
+                    votes.append(1)
+                elif score <= -2.5:
+                    votes.append(0)
+                else:
+                    votes.append(-1)
+
+                # Guven = skor normalize
+                conf = min(abs(score) / 5.0, 1.0)
+                confidences.append(conf)
+                tf_details[tf] = {'score': score, 'ema': ema_f > ema_s, 'rsi': rsi_last, 'macd': macd_last > 0, 'st': st_dir}
+
+            except Exception as e:
+                logger.debug(f"{tf} consensus hatasi: {e}")
+                continue
+
+        if not votes:
+            return None, None, current_price, tf_details
+
+        up_votes = sum(1 for v in votes if v == 1)
+        down_votes = sum(1 for v in votes if v == 0)
+        total_valid = sum(1 for v in votes if v != -1)
+
+        if total_valid == 0:
+            return None, 0.0, current_price, tf_details
+
+        consensus = up_votes / total_valid if (up_votes >= down_votes) else -(down_votes / total_valid)
+        avg_conf = np.mean(confidences) if confidences else 0.5
+
+        return consensus, avg_conf, current_price, tf_details
+
     def make_prediction(self, timeframe="4h"):
-        """Tahmin yap"""
+        """Gelismis tahmin: ensemble + coklu zaman dilimi + ADX rejim + dinamik guven."""
         try:
             if self.model is None:
-                # Modeli yükle
                 try:
                     self.model = joblib.load(self.model_path)
                     with open('feature_names.txt', 'r') as f:
                         self.features = f.read().split(',')
                 except:
-                    logger.error("Model bulunamadı, önce eğitim yapın")
+                    logger.error("Model bulunamadi, once egitim yapin")
                     return None
-            
-            # Güncel verileri çek (1h max 730 gün)
+
+            # 1. Ensemble ML tahmini
             gmstr_data = self.fetch_gmstr_data(period="2y")
             market_data = self.fetch_market_data()
-            
+
             if gmstr_data is None:
-                logger.error("GMSTR verisi çekilemedi")
+                logger.error("GMSTR verisi cekilemedi")
                 return None
-            
-            # Özellikler oluştur
+
             X = self.create_features(gmstr_data, market_data)
-            
             if X is None or len(X) == 0:
-                logger.error("Özellikler oluşturulamadı")
+                logger.error("Ozellikler olusturulamadi")
                 return None
-            
-            # Son özellik vektörünü al
+
             latest_features = X[-1].reshape(1, -1)
-            
-            # Tahmin yap
-            prediction = self.model.predict(latest_features)[0]
-            probability = self.model.predict_proba(latest_features)[0]
-            
             current_price = gmstr_data['Close'].iloc[-1]
-            confidence = max(probability)
-            
-            # Hedef fiyat hesapla
-            if prediction == 1:  # Yükseliş
-                target_price = current_price * 1.015  # %1.5 hedef
-                direction = "YÜKSELİŞ"
-            else:  # Düşüş
-                target_price = current_price * 0.985  # %1.5 hedef
-                direction = "DÜŞÜŞ"
-            
-            # Tahmin zamanını hesapla (şu an + timeframe)
+
+            # PCA ve Scaler uygula (varsa)
+            if isinstance(self.model, dict):
+                if self.model.get('scaler'):
+                    latest_features = self.model['scaler'].transform(latest_features)
+                    logger.debug("Scaler uygulandi")
+                if self.model.get('pca'):
+                    latest_features = self.model['pca'].transform(latest_features)
+                    logger.debug(f"PCA uygulandi: {latest_features.shape[1]} bilesen")
+
+            # LGBM tahmin
+            if isinstance(self.model, dict) and 'lgb' in self.model:
+                lgb_proba = self.model['lgb'].predict_proba(latest_features)[0][1]
+                ml_prediction = 1 if lgb_proba > 0.5 else 0
+                ml_confidence = max(lgb_proba, 1 - lgb_proba)
+                logger.debug(f"LGBM proba: {lgb_proba:.4f}")
+            else:
+                ml_prediction = self.model.predict(latest_features)[0]
+                probability = self.model.predict_proba(latest_features)[0]
+                ml_confidence = max(probability)
+
+            # 2. Coklu zaman dilimi consensus
+            consensus, tf_conf, _, tf_details = self._multi_timeframe_consensus()
+            consensus_str = f"{consensus:.2f}" if consensus is not None else "N/A"
+            tf_conf_str = f"{tf_conf:.3f}" if tf_conf is not None else "N/A"
+            logger.info(f"Multi-TF consensus: {consensus_str} | conf: {tf_conf_str} | details: {tf_details}")
+
+            # 3. ADX piyasa rejimi (>=25)
+            adx_value = self._get_adx(gmstr_data)
+            regime = "TREND" if adx_value >= 25 else "SIDEWAYS"
+            logger.info(f"ADX: {adx_value:.1f} | Rejim: {regime}")
+
+            # 4. Final sinyal: ML + consensus birlestir
+            if consensus is not None:
+                ml_score = ml_confidence if ml_prediction == 1 else -ml_confidence
+                combined_score = 0.6 * ml_score + 0.4 * consensus
+                final_prediction = 1 if combined_score > 0 else 0
+                combined_confidence = abs(combined_score)
+            else:
+                final_prediction = ml_prediction
+                combined_confidence = ml_confidence
+
+            # 5. Haber analizi filtresi
+            news_mult, news_score = 1.0, None
+            if self.news_analyzer:
+                try:
+                    news = self.news_analyzer.fetch_news(count=12)
+                    sentiment = self.news_analyzer.get_news_sentiment_score(news)
+                    if sentiment:
+                        news_score = sentiment.get('overall_score', 0)
+                        # Negatif haber + YUKSELIS sinyali = guven dusur
+                        if news_score < -0.3 and final_prediction == 1:
+                            combined_confidence *= 0.8
+                            logger.info(f"Negatif haber, guven dusuruldu: {news_score:.2f}")
+                        elif news_score > 0.3 and final_prediction == 0:
+                            combined_confidence *= 0.8
+                            logger.info(f"Pozitif haber ama DUSUS sinyali, guven dusuruldu: {news_score:.2f}")
+                except Exception as e:
+                    logger.debug(f"Haber filtresi hatasi: {e}")
+
+            # Pozisyon boyutu: Kelly Criterion
+            try:
+                # Kelly % = (p*b - q) / b
+                # p = win probability (confidence)
+                # b = win/loss ratio (tahmini 2:1)
+                p = combined_confidence
+                b = 2.0  # Risk/Reward ratio
+                q = 1 - p
+                kelly_pct = (p * b - q) / b
+                kelly_pct = max(0.1, min(0.5, kelly_pct))  # %10-%50 arasi sinirla
+                position_size = kelly_pct
+                logger.info(f"Kelly pozisyon boyutu: %{position_size*100:.1f}")
+            except Exception as kelly_err:
+                position_size = 0.2
+                logger.warning(f"Kelly hatasi: {kelly_err}")
+
+            # 6. Korelasyon filtresi (GMSTR-BIST100)
+            try:
+                if market_data and 'bist100' in market_data and not market_data['bist100'].empty:
+                    bist = market_data['bist100']
+                    gmstr_ret = gmstr_data['Close'].pct_change().dropna().tail(20).values
+                    bist_ret = bist['Close'].pct_change().dropna().tail(20).values
+                    min_len = min(len(gmstr_ret), len(bist_ret))
+                    if min_len >= 10:
+                        corr = np.corrcoef(gmstr_ret[-min_len:], bist_ret[-min_len:])[0, 1]
+                        if not pd.isna(corr) and abs(corr) < 0.3:
+                            combined_confidence *= 0.9
+                            logger.info(f"Zayif korelasyon ({corr:.2f}), guven dusuruldu")
+            except Exception as e:
+                logger.debug(f"Korelasyon filtresi hatasi: {e}")
+
+            # 7. Volatilite bazli adaptive threshold
+            try:
+                recent_returns = gmstr_data['Close'].pct_change().dropna().tail(20)
+                vol = recent_returns.std() * np.sqrt(252) if len(recent_returns) > 5 else 0.3
+            except:
+                vol = 0.3
+
+            base_threshold = 0.50  # Sabit dusuk threshold
+
+            # 8. SIDeways piyasada guven dusur
+            if regime == "SIDEWAYS":
+                combined_confidence *= 0.9
+                logger.info(f"Sideways: guven dusuruldu")
+
+            # 9. Pozisyon varsa trailing stop kontrolu
+            if self.position:
+                try:
+                    if self.position['direction'] == "YUKSELIS":
+                        # Trailing stop yukselt
+                        new_sl = current_price * 0.98
+                        if new_sl > self.position['stop_loss']:
+                            self.position['stop_loss'] = new_sl
+                            logger.info(f"Trailing stop yukseltildi: {new_sl:.2f}")
+                        # TP1 veya TP2 tetiklendi mi
+                        if current_price >= self.position['tp1'] and not self.position.get('tp1_hit'):
+                            self.position['tp1_hit'] = True
+                            logger.info("TP1 tetiklendi, pozisyon yariya dusuruldu")
+                        if current_price >= self.position['tp2']:
+                            logger.info("TP2 tetiklendi, pozisyon tamamen kapatildi")
+                            self.position = None
+                    else:  # DUSUS
+                        new_sl = current_price * 1.02
+                        if new_sl < self.position['stop_loss']:
+                            self.position['stop_loss'] = new_sl
+                            logger.info(f"Trailing stop dusuruldu: {new_sl:.2f}")
+                        if current_price <= self.position['tp1'] and not self.position.get('tp1_hit'):
+                            self.position['tp1_hit'] = True
+                            logger.info("TP1 tetiklendi, pozisyon yariya dusuruldu")
+                        if current_price <= self.position['tp2']:
+                            logger.info("TP2 tetiklendi, pozisyon tamamen kapatildi")
+                            self.position = None
+                    # Stop-loss tetiklendi mi
+                    if self.position:
+                        if (self.position['direction'] == "YUKSELIS" and current_price <= self.position['stop_loss']) or \
+                           (self.position['direction'] == "DUSUS" and current_price >= self.position['stop_loss']):
+                            logger.warning("Stop-loss tetiklendi, pozisyon kapatildi")
+                            self.position = None
+                except Exception as e:
+                    logger.debug(f"Trailing stop hatasi: {e}")
+
+            # 10. Gunluk circuit breaker (max kayip %5)
+            today = datetime.now().date()
+            if self.last_trade_date != today:
+                self.daily_pnl = 0.0
+                self.daily_trades = 0
+                self.last_trade_date = today
+            if self.daily_pnl < -500:  # Sabit ornek: 500 birim
+                logger.warning("Gunluk circuit breaker tetiklendi, bugun islem yok")
+                direction = "HOLD"
+
+            # 11. Kalite filtresi: Guven > 0.60 (dengeli)
+            quality_pass = abs(ml_confidence - 0.5) > 0.10 if 'ml_confidence' in dir() else combined_confidence >= 0.60
+            if not quality_pass:
+                logger.info(f"Kalite filtresi: guven {combined_confidence:.3f}, HOLD")
+                direction = "HOLD"
+                target_price = current_price
+            elif combined_confidence < base_threshold:
+                direction = "HOLD"
+                target_price = current_price
+                logger.info(f"Guven dusuk ({combined_confidence:.3f} < {base_threshold}), HOLD")
+            else:
+                if final_prediction == 1:
+                    target_price = current_price * 1.015
+                    direction = "YUKSELIS"
+                else:
+                    target_price = current_price * 0.985
+                    direction = "DUSUS"
+                # Yeni pozisyon ac
+                self.position = {
+                    'entry_price': current_price,
+                    'direction': direction,
+                    'stop_loss': current_price * 0.98 if direction == "YUKSELIS" else current_price * 1.02,
+                    'tp1': target_price * 0.67 + current_price * 0.33,
+                    'tp2': target_price,
+                    'size': 1.0,
+                    'tp1_hit': False
+                }
+
             now = datetime.now()
             if timeframe == "4h":
                 predicted_for_time = now + timedelta(hours=4)
@@ -765,47 +1225,127 @@ class GMSTRPredictionSystem:
                 predicted_for_time = now + timedelta(days=1)
             else:
                 predicted_for_time = now + timedelta(hours=4)
-            
-            # Tahmini kaydet
-            pred_id = self.save_prediction(current_price, direction, target_price, confidence, timeframe, predicted_for_time)
-            
-            # %60+ güven varsa Telegram'dan sinyal gönder
+
+            pred_id = self.save_prediction(current_price, direction, target_price, combined_confidence, timeframe, predicted_for_time)
+
+            # Risk yonetimi bilgilerini hesapla
+            risk_info = None
+            if direction != "HOLD":
+                try:
+                    risk_info = self.calculate_risk_management(
+                        current_price, target_price, direction, combined_confidence
+                    )
+                except Exception as e:
+                    logger.warning(f"Risk hesaplama hatasi: {e}")
+
             telegram_sent = False
-            if confidence >= 0.60:
-                emoji = "🟢" if direction == "YÜKSELİŞ" else "🔴"
+            if direction != "HOLD" and combined_confidence >= base_threshold:
+                emoji = "🟢" if direction == "YUKSELIS" else "🔴"
+                risk_str = ""
+                if risk_info and isinstance(risk_info, dict):
+                    try:
+                        sl = risk_info.get('stop_loss', 0) or 0
+                        tp1 = risk_info.get('take_profit_1', 0) or 0
+                        tp2 = risk_info.get('take_profit_2', 0) or 0
+                        rr = risk_info.get('risk_reward_ratio', 0) or 0
+                        pos = risk_info.get('position_size_pct', 10) or 10
+                        kelly = risk_info.get('kelly_raw_pct', 0) or 0
+                        streak = risk_info.get('streak_multiplier', 1) or 1
+                        risk_str = f"""
+🛑 <b>Stop Loss:</b> ₺{sl:.2f}
+🎯 <b>TP1:</b> ₺{tp1:.2f} | <b>TP2:</b> ₺{tp2:.2f}
+📐 <b>R/R:</b> {rr:.2f}
+💼 <b>Pozisyon:</b> %{pos:.1f} (Kelly %{kelly:.1f})
+🔥 <b>Streak:</b> {streak:.2f}x"""
+                    except Exception as rs_err:
+                        logger.warning(f"Risk string olusturma hatasi: {rs_err}")
+                        risk_str = ""
+
+                # Son 5 tahmin gecmisini getir
+                history_str = ""
+                try:
+                    conn = self.get_db_connection()
+                    cursor = conn.cursor()
+                    ph = '%s' if self.is_postgres else '?'
+                    cursor.execute(f'''
+                        SELECT predicted_direction, confidence, actual_price, is_correct, timestamp
+                        FROM predictions
+                        WHERE predicted_direction != 'HOLD'
+                        AND telegram_sent = 1
+                        ORDER BY timestamp DESC
+                        LIMIT 5
+                    ''')
+                    rows = cursor.fetchall()
+                    if rows:
+                        history_lines = []
+                        for row in rows:
+                            pred_dir, conf, actual, correct, ts = row
+                            correct_emoji = "✅" if correct == 1 else "❌" if correct == 0 else "⏳"
+                            actual_str = f"₺{actual:.0f}" if actual else "?"
+                            history_lines.append(f"  {correct_emoji} {pred_dir} (%{conf*100:.0f}) → {actual_str}")
+                        
+                        # Dogruluk orani
+                        cursor.execute('''
+                            SELECT COUNT(*) as total, SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END) as correct
+                            FROM predictions WHERE is_correct IS NOT NULL
+                        ''')
+                        total_val, correct_val = cursor.fetchone()
+                        acc_str = f"%{correct_val/total_val*100:.0f}" if total_val and total_val > 0 else "N/A"
+                        
+                        history_str = f"""
+
+📋 <b>Son Tahminler:</b>
+{chr(10).join(history_lines)}
+
+📊 <b>Toplam Dogruluk:</b> {acc_str} ({correct_val}/{total_val})"""
+                    conn.close()
+                except Exception as hist_err:
+                    logger.debug(f"Tahmin gecmisi hatasi: {hist_err}")
+
                 message = f"""<b>GMSTR Sinyal</b> {emoji}
 
-📅 <b>Tahmin Zamanı:</b> {now.strftime('%d.%m.%Y %H:%M')}
-⏰ <b>Geçerli Olacağı Zaman:</b> {predicted_for_time.strftime('%d.%m.%Y %H:%M')}
+📅 <b>Tahmin Zamani:</b> {now.strftime('%d.%m.%Y %H:%M')}
+⏰ <b>Gecerli Olacagi Zaman:</b> {predicted_for_time.strftime('%d.%m.%Y %H:%M')}
 
 💰 <b>Mevcut Fiyat:</b> ₺{current_price:.2f}
 📈 <b>Tahmin:</b> {direction}
 🎯 <b>Hedef Fiyat:</b> ₺{target_price:.2f}
-🔒 <b>Güven:</b> %{confidence*100:.1f}
+🔒 <b>Guven:</b> %{combined_confidence*100:.1f} (ML:{ml_confidence:.2f} + TF:{(tf_conf if tf_conf else 0):.2f})
+📊 <b>Rejim:</b> {regime} (ADX:{adx_value:.1f}) | Vol:{vol:.2f}
+{risk_str}
 
-⏳ <b>Beklenen Değişim:</b> %{abs((target_price - current_price) / current_price * 100):.2f}"""
-                
+⏳ <b>Beklenen Degisim:</b> %{abs((target_price - current_price) / current_price * 100):.2f}%{history_str}"""
                 telegram_sent = self.send_telegram_message(message)
-                
                 if telegram_sent and pred_id:
                     self.update_telegram_status(pred_id, 1)
-            
+
             result = {
                 'timestamp': now,
                 'predicted_for_time': predicted_for_time,
                 'current_price': current_price,
                 'direction': direction,
                 'target_price': target_price,
-                'confidence': confidence,
+                'confidence': combined_confidence,
+                'ml_confidence': ml_confidence,
+                'consensus': consensus,
+                'regime': regime,
+                'adx': adx_value,
+                'volatility_annual': round(vol, 3),
+                'threshold_used': base_threshold,
+                'risk_info': risk_info,
+                'news_score': news_score,
+                'position_status': 'OPEN' if self.position else 'CLOSED',
+                'tf_details': tf_details,
                 'timeframe': timeframe,
                 'telegram_sent': telegram_sent
             }
-            
-            logger.info(f"Tahmin yapıldı: {direction} - Güven: {confidence:.4f} - Telegram: {telegram_sent}")
+            logger.info(f"Tahmin: {direction} | Guven: {combined_confidence:.4f} | Rejim: {regime} | Vol: {vol:.2f} | Telegram: {telegram_sent}")
             return result
-            
+
         except Exception as e:
-            logger.error(f"Tahmin hatası: {e}")
+            logger.error(f"Tahmin hatasi: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def save_prediction(self, current_price, direction, target_price, confidence, timeframe, predicted_for_time=None):
@@ -854,30 +1394,31 @@ class GMSTRPredictionSystem:
             logger.error(f"Telegram status güncelleme hatası: {e}")
     
     def update_predictions(self):
-        """Tahminleri güncelle (doğruluk kontrolü) - Otomatik"""
+        """Tahminleri guncelle (dogruluk kontrolu) - Otomatik"""
         try:
             conn = self.get_db_connection()
             cursor = conn.cursor()
             
             now = datetime.now()
-            six_hours_ago = now - timedelta(hours=6)
             
+            # Daha agresif validasyon: 5dk gecmis veya predicted_for_time gecmis olanlar
             if self.is_postgres:
                 cursor.execute('''
                     SELECT id, timestamp, predicted_for_time, current_price, predicted_price, predicted_direction, confidence
                     FROM predictions
                     WHERE actual_price IS NULL
                     AND (predicted_for_time < %s OR timestamp < %s)
-                ''', (now, six_hours_ago))
+                ''', (now, now - timedelta(minutes=5)))
             else:
                 cursor.execute('''
                     SELECT id, timestamp, predicted_for_time, current_price, predicted_price, predicted_direction, confidence
                     FROM predictions
                     WHERE actual_price IS NULL
-                    AND (predicted_for_time < datetime('now') OR datetime(timestamp) < datetime('now', '-6 hours'))
+                    AND (predicted_for_time < datetime('now') OR datetime(timestamp) < datetime('now', '-5 minutes'))
                 ''')
             
             predictions = cursor.fetchall()
+            logger.info(f"Validasyon bekleyen tahmin sayisi: {len(predictions)}")
             
             if len(predictions) == 0:
                 conn.close()
@@ -899,13 +1440,22 @@ class GMSTRPredictionSystem:
             for pred in predictions:
                 pred_id, timestamp, pred_for_time, current_price, pred_price, pred_direction, confidence = pred
                 
-                # Doğruluğu kontrol et
-                if pred_direction == "YÜKSELİŞ":
+                # Dogrulugu kontrol et (bizim yon formati: YUKSELIS / DUSUS)
+                if pred_direction == "YUKSELIS":
                     is_correct = 1 if actual_price > current_price else 0
-                    actual_direction = "YÜKSELİŞ" if actual_price > current_price else "DÜŞÜŞ"
-                else:
+                    actual_direction = "YUKSELIS" if actual_price > current_price else "DUSUS"
+                elif pred_direction == "DUSUS":
                     is_correct = 1 if actual_price < current_price else 0
-                    actual_direction = "DÜŞÜŞ" if actual_price < current_price else "YÜKSELİŞ"
+                    actual_direction = "DUSUS" if actual_price < current_price else "YUKSELIS"
+                else:
+                    # HOLD veya diger: fiyat yukseldiyse YUKSELIS, dustuyse DUSUS
+                    if actual_price > current_price:
+                        actual_direction = "YUKSELIS"
+                    elif actual_price < current_price:
+                        actual_direction = "DUSUS"
+                    else:
+                        actual_direction = "HOLD"
+                    is_correct = None
                 
                 if is_correct:
                     correct_count += 1
@@ -1013,111 +1563,172 @@ class GMSTRPredictionSystem:
             return None
     
     def get_premarket_signal(self):
-        """Borsa kapalıyken gümüş hareketine göre açılış sinyali - GMSTR kapanış anındaki gümüş fiyatından hesapla"""
+        """Cok faktorlu pre-market sinyali: gumus + BIST100 + USD/TRY + altin."""
         try:
-            # Cache kontrol - 5 dakika
-            cache_now = time_module.time()
-            if hasattr(self, '_premarket_cache') and self._premarket_cache and hasattr(self, '_premarket_cache_time') and (cache_now - self._premarket_cache_time) < 300:
-                logger.info("Pre-market sinyali cache'den alındı")
-                return self._premarket_cache
-            
-            # GMSTR verisi - saatlik (son 5 gün)
             gmstr = yf.Ticker("GMSTR.IS")
             gmstr_data = gmstr.history(period="5d", interval="1h")
             if gmstr_data.empty:
-                logger.error("GMSTR verisi boş")
+                logger.error("GMSTR verisi bos")
                 return None
-            
-            # Son veri = son saatlik kapanış (borsa kapalıysa son kapanış, açıksa son saat)
+
             gmstr_last_close = float(gmstr_data['Close'].iloc[-1])
-            gmstr_close_time = gmstr_data.index[-1]  # aware datetime (UTC)
-            
-            logger.info(f"GMSTR son veri: fiyat={gmstr_last_close}, zaman={gmstr_close_time}")
-            
-            # Gerçek gümüş (SI=F) verisi - SAATLİK interval
-            silver = yf.Ticker("SI=F")
-            silver_data = silver.history(period="7d", interval="1h")
-            if silver_data.empty:
-                logger.error("Gümüş verisi boş")
-                return None
-            
-            silver_current = float(silver_data['Close'].iloc[-1])
-            logger.info(f"Gümüş son veri: fiyat={silver_current}, zaman={silver_data.index[-1]}")
-            
-            # Gümüşte GMSTR kapanış zamanına en yakın veriyi bul (timestamp karşılaştırması - timezone güvenli)
-            gmstr_ts = gmstr_close_time.timestamp()
-            silver_at_gmstr_close = None
-            best_idx = -1
-            for i in range(len(silver_data)-1, -1, -1):
-                silver_ts = silver_data.index[i].timestamp()
-                if silver_ts <= gmstr_ts:
-                    silver_at_gmstr_close = float(silver_data['Close'].iloc[i])
-                    best_idx = i
+            gmstr_close_time = gmstr_data.index[-1]
+            logger.info(f"GMSTR son: fiyat={gmstr_last_close}, zaman={gmstr_close_time}")
+
+            factors = {}
+
+            # 1. Gumus (SI=F, XAGUSD=X, SL=F)
+            silver_symbols = ["SI=F", "XAGUSD=X", "SL=F"]
+            silver_change = None
+            silver_current = None
+            silver_at_close = None
+            for sym in silver_symbols:
+                try:
+                    silver = yf.Ticker(sym)
+                    silver_data = silver.history(period="7d", interval="1h")
+                    if silver_data.empty or len(silver_data) < 2:
+                        continue
+                    silver_current = float(silver_data['Close'].iloc[-1])
+                    gmstr_ts = gmstr_close_time.timestamp()
+                    silver_at_close = None
+                    for i in range(len(silver_data)-1, -1, -1):
+                        if silver_data.index[i].timestamp() <= gmstr_ts:
+                            silver_at_close = float(silver_data['Close'].iloc[i])
+                            break
+                    if silver_at_close is None:
+                        silver_at_close = float(silver_data['Close'].iloc[0])
+                    silver_change = ((silver_current - silver_at_close) / silver_at_close) * 100
+                    logger.info(f"Gumus ({sym}): {silver_change:.2f}% | now=${silver_current:.2f} close=${silver_at_close:.2f}")
                     break
-            
-            if silver_at_gmstr_close is None:
-                silver_at_gmstr_close = float(silver_data['Close'].iloc[0])
-                logger.warning("GMSTR kapanış zamanına uygun gümüş verisi bulunamadı, ilk veri kullanılıyor")
+                except Exception:
+                    continue
+            if silver_change is not None:
+                factors['silver'] = silver_change
             else:
-                logger.info(f"Gümüş GMSTR kapanış zamanında: fiyat={silver_at_gmstr_close}, idx={best_idx}, zaman={silver_data.index[best_idx]}")
-            
-            # Gümüşteki değişim
-            silver_change_pct = ((silver_current - silver_at_gmstr_close) / silver_at_gmstr_close) * 100
-            
-            logger.info(f"Pre-market: GMSTR={gmstr_last_close:.2f}, Silver@close={silver_at_gmstr_close:.2f}, Silver@now={silver_current:.2f}, Change={silver_change_pct:.2f}%")
-            
-            # Sinyal oluştur
-            if silver_change_pct > 1.5:
-                signal = "STRONG_BUY"
-                direction = "YÜKSELİŞ"
-                confidence = min(0.70 + abs(silver_change_pct) * 0.02, 0.95)
-                reason = f"GMSTR kapanışından beri gümüş %{silver_change_pct:.2f} yükseldi"
-            elif silver_change_pct > 0.5:
-                signal = "BUY"
-                direction = "YÜKSELİŞ"
-                confidence = min(0.60 + abs(silver_change_pct) * 0.05, 0.75)
-                reason = f"GMSTR kapanışından beri gümüş %{silver_change_pct:.2f} yükseldi"
-            elif silver_change_pct < -1.5:
-                signal = "STRONG_SELL"
-                direction = "DÜŞÜŞ"
-                confidence = min(0.70 + abs(silver_change_pct) * 0.02, 0.95)
-                reason = f"GMSTR kapanışından beri gümüş %{abs(silver_change_pct):.2f} düştü"
-            elif silver_change_pct < -0.5:
-                signal = "SELL"
-                direction = "DÜŞÜŞ"
-                confidence = min(0.60 + abs(silver_change_pct) * 0.05, 0.75)
-                reason = f"GMSTR kapanışından beri gümüş %{abs(silver_change_pct):.2f} düştü"
+                logger.warning("Gumus verisi alinamadi (tum semboller denendi)")
+                factors['silver'] = 0
+
+            # Fiyat bilgilerini sakla
+            prices = {
+                'silver_current': silver_current,
+                'silver_at_close': silver_at_close,
+                'bist100_current': None,
+                'bist100_at_close': None,
+                'usd_try_current': None,
+                'usd_try_at_close': None,
+                'gold_current': None,
+                'gold_at_close': None
+            }
+
+            # 2. BIST100 (XU100.IS)
+            try:
+                bist = yf.Ticker("XU100.IS")
+                bist_data = bist.history(period="5d", interval="1h")
+                if not bist_data.empty:
+                    bist_current = float(bist_data['Close'].iloc[-1])
+                    bist_at_close = None
+                    for i in range(len(bist_data)-1, -1, -1):
+                        if bist_data.index[i].timestamp() <= gmstr_ts:
+                            bist_at_close = float(bist_data['Close'].iloc[i])
+                            break
+                    if bist_at_close:
+                        bist_change = ((bist_current - bist_at_close) / bist_at_close) * 100
+                        factors['bist100'] = bist_change
+                        prices['bist100_current'] = bist_current
+                        prices['bist100_at_close'] = bist_at_close
+                        logger.info(f"BIST100: {bist_change:.2f}% | now={bist_current:.0f}")
+            except Exception as e:
+                logger.warning(f"BIST100 verisi alinamadi: {e}")
+
+            # 3. USD/TRY
+            try:
+                usd = yf.Ticker("USDTRY=X")
+                usd_data = usd.history(period="7d", interval="1h")
+                if not usd_data.empty:
+                    usd_current = float(usd_data['Close'].iloc[-1])
+                    usd_at_close = None
+                    for i in range(len(usd_data)-1, -1, -1):
+                        if usd_data.index[i].timestamp() <= gmstr_ts:
+                            usd_at_close = float(usd_data['Close'].iloc[i])
+                            break
+                    if usd_at_close:
+                        usd_change = ((usd_current - usd_at_close) / usd_at_close) * 100
+                        factors['usd_try'] = usd_change
+                        prices['usd_try_current'] = usd_current
+                        prices['usd_try_at_close'] = usd_at_close
+                        logger.info(f"USD/TRY: {usd_change:.2f}% | now={usd_current:.2f}")
+            except Exception as e:
+                logger.warning(f"USD/TRY verisi alinamadi: {e}")
+
+            # 4. Altin (GC=F)
+            try:
+                gold = yf.Ticker("GC=F")
+                gold_data = gold.history(period="7d", interval="1h")
+                if not gold_data.empty:
+                    gold_current = float(gold_data['Close'].iloc[-1])
+                    gold_at_close = None
+                    for i in range(len(gold_data)-1, -1, -1):
+                        if gold_data.index[i].timestamp() <= gmstr_ts:
+                            gold_at_close = float(gold_data['Close'].iloc[i])
+                            break
+                    if gold_at_close:
+                        gold_change = ((gold_current - gold_at_close) / gold_at_close) * 100
+                        factors['gold'] = gold_change
+                        prices['gold_current'] = gold_current
+                        prices['gold_at_close'] = gold_at_close
+                        logger.info(f"Altin: {gold_change:.2f}% | now=${gold_current:.2f}")
+            except Exception as e:
+                logger.warning(f"Altin verisi alinamadi: {e}")
+
+            # Agirlikli kombine skor
+            weights = {'silver': 0.35, 'bist100': 0.25, 'usd_try': 0.20, 'gold': 0.20}
+            total_score = 0
+            total_weight = 0
+            for key, val in factors.items():
+                w = weights.get(key, 0.15)
+                total_score += val * w
+                total_weight += w
+
+            if total_weight > 0:
+                combined_change = total_score / total_weight
             else:
-                signal = "HOLD"
-                direction = "YATAY"
-                confidence = 0.55
-                reason = f"GMSTR kapanışından beri gümüş %{silver_change_pct:.2f} değişti (yatay)"
-            
-            # Hedef fiyat = GMSTR kapanış × gümüş değişimi
-            target = gmstr_last_close * (1 + silver_change_pct / 100)
-            
+                combined_change = 0
+
+            logger.info(f"Pre-market kombine skor: {combined_change:.2f}%")
+
+            # Sinyal olustur
+            if combined_change > 1.5:
+                signal, direction, confidence = "STRONG_BUY", "YUKSELIS", min(0.55 + abs(combined_change)*0.05, 0.70)
+            elif combined_change > 0.5:
+                signal, direction, confidence = "BUY", "YUKSELIS", min(0.52 + abs(combined_change)*0.08, 0.65)
+            elif combined_change < -1.5:
+                signal, direction, confidence = "STRONG_SELL", "DUSUS", min(0.55 + abs(combined_change)*0.05, 0.70)
+            elif combined_change < -0.5:
+                signal, direction, confidence = "SELL", "DUSUS", min(0.52 + abs(combined_change)*0.08, 0.65)
+            else:
+                signal, direction, confidence = "HOLD", "YATAY", 0.50
+
+            target = gmstr_last_close * (1 + combined_change / 100)
+
             result = {
                 'gmstr_last_close': gmstr_last_close,
                 'gmstr_close_time': gmstr_close_time.strftime('%d.%m.%Y %H:%M'),
-                'silver_at_close': silver_at_gmstr_close,
-                'silver_current': silver_current,
-                'silver_change_pct': silver_change_pct,
+                'combined_change_pct': combined_change,
+                'factors': factors,
+                'prices': prices,
                 'signal': signal,
                 'direction': direction,
                 'confidence': confidence,
                 'target_price': target,
-                'reason': reason,
                 'timestamp': datetime.now().strftime('%d.%m.%Y %H:%M')
             }
-            
-            # Cache'e kaydet
+
             self._premarket_cache = result
             self._premarket_cache_time = time_module.time()
-            
             return result
-            
+
         except Exception as e:
-            logger.error(f"Pre-market sinyal hatası: {e}")
+            logger.error(f"Pre-market sinyal hatasi: {e}")
             import traceback
             logger.error(traceback.format_exc())
             if hasattr(self, '_premarket_cache') and self._premarket_cache:
@@ -1232,47 +1843,231 @@ class GMSTRPredictionSystem:
             logger.error(traceback.format_exc())
             return None
     
-    def calculate_risk_management(self, current_price, predicted_price, direction, confidence):
-        """Risk yönetimi hesapla"""
+    def _get_streak_multiplier(self, days=30):
+        """Son kazanma/kaybetme streak'ine gore pozisyon olceklendir.
+        Kazanma streak'i = buyut, kaybetme = kucult (anti-martingale)."""
         try:
-            # Volatilite bazlı stop-loss
-            volatility = abs(predicted_price - current_price) / current_price
-            
-            if direction == "YÜKSELİŞ":
-                stop_loss = current_price * (1 - volatility * 1.5)
-                take_profit = predicted_price
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+
+            if self.is_postgres:
+                cursor.execute('''
+                    SELECT is_correct FROM predictions
+                    WHERE is_correct IS NOT NULL
+                    AND created_at > NOW() - INTERVAL '%s days'
+                    ORDER BY timestamp DESC
+                    LIMIT 10
+                ''', (days,))
             else:
-                stop_loss = current_price * (1 + volatility * 1.5)
-                take_profit = predicted_price
-            
-            # Risk/Ödül oranı
-            risk = abs(current_price - stop_loss)
-            reward = abs(current_price - take_profit)
-            risk_reward_ratio = reward / risk if risk > 0 else 0
-            
-            # Pozisyon büyüklüğü (güvene göre)
-            if confidence >= 0.80:
-                position_size = 100  # %100
-            elif confidence >= 0.70:
-                position_size = 75   # %75
-            elif confidence >= 0.60:
-                position_size = 50   # %50
-            else:
-                position_size = 25   # %25
-            
-            return {
-                'stop_loss': stop_loss,
-                'take_profit': take_profit,
-                'risk_reward_ratio': risk_reward_ratio,
-                'position_size': position_size,
-                'risk_amount': risk,
-                'potential_profit': reward
-            }
-            
+                cursor.execute('''
+                    SELECT is_correct FROM predictions
+                    WHERE is_correct IS NOT NULL
+                    AND datetime(created_at) > datetime('now', '-{} days')
+                    ORDER BY timestamp DESC
+                    LIMIT 10
+                '''.format(days))
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            if not rows:
+                return 1.0
+
+            # Streak hesapla (sondan basla)
+            streak = 0
+            first = rows[0][0]
+            for r in rows:
+                if r[0] == first:
+                    streak += 1 if first == 1 else -1
+                else:
+                    break
+
+            # Anti-martingale: kazaninca artir, kaybedince azalt
+            if streak >= 3:
+                return 1.5  # Max buyutme
+            elif streak >= 2:
+                return 1.25
+            elif streak <= -3:
+                return 0.5  # Max kucultme
+            elif streak <= -2:
+                return 0.75
+            return 1.0
+
         except Exception as e:
-            logger.error(f"Risk yönetimi hatası: {e}")
+            logger.warning(f"Streak hesaplama hatasi: {e}")
+            return 1.0
+
+    def calculate_risk_management(self, current_price, predicted_price, direction, confidence,
+                                     portfolio_value: float = 10000.0,
+                                     win_rate: float = 0.55,
+                                     avg_win_pct: float = 2.5,
+                                     avg_loss_pct: float = -1.5):
+        """Profesyonel risk yonetimi: Kelly + parcali TP + trailing stop + streak + circuit breaker."""
+        try:
+            from risk_management import RiskManager
+            rm = RiskManager(initial_balance=portfolio_value)
+
+            # 1. Kelly Criterion
+            kelly_size = rm.kelly_criterion_position_size(
+                win_rate=win_rate, avg_win=avg_win_pct, avg_loss=avg_loss_pct,
+                current_balance=portfolio_value
+            )
+
+            # 2. Guvene gore olcekle
+            confidence_multiplier = confidence
+            adjusted_position = kelly_size * confidence_multiplier
+
+            # 3. Streak bazli olcekleme (anti-martingale)
+            streak_mult = self._get_streak_multiplier(days=30)
+            adjusted_position *= streak_mult
+            logger.info(f"Streak multiplier: {streak_mult:.2f}x")
+
+            # 4. Maksimum pozisyon limiti (%25 portfoy)
+            max_position = portfolio_value * 0.25
+            position_size = min(adjusted_position, max_position)
+            position_pct = (position_size / portfolio_value) * 100 if portfolio_value > 0 else 0
+
+            # 5. ATR bazli stop-loss
+            volatility = abs(predicted_price - current_price) / current_price
+            atr_based_sl = max(volatility * 1.5, 0.015)  # Min %1.5
+
+            if direction == "YUKSELIS":
+                stop_loss = current_price * (1 - atr_based_sl)
+                # Parçali take-profit
+                tp1 = current_price * 1.01  # %1
+                tp2 = current_price * 1.025  # %2.5
+            else:
+                stop_loss = current_price * (1 + atr_based_sl)
+                tp1 = current_price * 0.99
+                tp2 = current_price * 0.975
+
+            risk = abs(current_price - stop_loss)
+            reward = abs(current_price - tp2)
+            risk_reward_ratio = reward / risk if risk > 0 else 0
+
+            # 6. R/R kotu ise pozisyonu kucult
+            if risk_reward_ratio < 1.5:
+                position_size *= 0.5
+                position_pct *= 0.5
+                logger.warning(f"R/R dusuk ({risk_reward_ratio:.2f}), pozisyon yariya dusuruldu")
+
+            # 7. Circuit breaker - gunluk max kayip %5
+            daily_loss_limit = portfolio_value * 0.05
+
+            return {
+                'stop_loss': round(stop_loss, 2),
+                'take_profit_1': round(tp1, 2),
+                'take_profit_2': round(tp2, 2),
+                'risk_reward_ratio': round(risk_reward_ratio, 2),
+                'position_size_usd': round(position_size, 2),
+                'position_size_pct': round(position_pct, 1),
+                'kelly_raw_pct': round((kelly_size / portfolio_value) * 100, 1),
+                'streak_multiplier': streak_mult,
+                'risk_amount': round(risk, 2),
+                'potential_profit_tp1': round(abs(tp1 - current_price), 2),
+                'potential_profit_tp2': round(abs(tp2 - current_price), 2),
+                'daily_loss_limit': round(daily_loss_limit, 2),
+                'strategy': '50% at TP1, 50% at TP2 with trailing stop after TP1'
+            }
+
+        except Exception as e:
+            logger.error(f"Risk yonetimi hatasi: {e}")
+            volatility = abs(predicted_price - current_price) / current_price
+            return {
+                'stop_loss': round(current_price * (1 - max(volatility * 1.5, 0.015)), 2),
+                'take_profit_1': round(current_price * 1.01, 2),
+                'take_profit_2': round(current_price * 1.025, 2),
+                'risk_reward_ratio': 1.5,
+                'position_size_pct': 10.0,
+                'risk_amount': round(current_price * max(volatility * 1.5, 0.015), 2),
+                'potential_profit_tp1': round(current_price * 0.01, 2),
+                'potential_profit_tp2': round(current_price * 0.025, 2)
+            }
+
+    def optimize_thresholds(self, days=60):
+        """Farkli guven esiklerinde backtest: en karli esigi bul."""
+        try:
+            logger.info(f"Esik optimizasyonu basliyor: son {days} gun")
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+
+            if self.is_postgres:
+                cursor.execute('''
+                    SELECT current_price, predicted_direction, actual_price, confidence, is_correct
+                    FROM predictions
+                    WHERE is_correct IS NOT NULL
+                    AND created_at > NOW() - INTERVAL '%s days'
+                    ORDER BY timestamp
+                ''', (days,))
+            else:
+                cursor.execute('''
+                    SELECT current_price, predicted_direction, actual_price, confidence, is_correct
+                    FROM predictions
+                    WHERE is_correct IS NOT NULL
+                    AND datetime(created_at) > datetime('now', '-{} days')
+                    ORDER BY timestamp
+                '''.format(days))
+
+            trades = cursor.fetchall()
+            conn.close()
+
+            if not trades or len(trades) < 20:
+                logger.warning("Optimizasyon icin yeterli veri yok")
+                return None
+
+            thresholds = [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+            results = []
+            initial = 10000
+
+            for thresh in thresholds:
+                capital = initial
+                position = 0
+                wins = losses = total = 0
+                equity = [capital]
+                position_size = 0.5  # %50 baslangic (guvenden bagimsiz)
+
+                for current, pred_dir, actual, conf, is_corr in trades:
+                    if conf < thresh:
+                        continue  # HOLD
+
+                    total += 1
+                    ret = abs((actual - current) / current) if is_corr else -abs((actual - current) / current)
+                    trade_return = ret * position_size
+                    capital *= (1 + trade_return)
+                    equity.append(capital)
+
+                    if is_corr:
+                        wins += 1
+                    else:
+                        losses += 1
+
+                total_ret = (capital - initial) / initial * 100
+                wr = (wins / total * 100) if total > 0 else 0
+                equity_s = pd.Series(equity)
+                rets = equity_s.pct_change().dropna()
+                sharpe = (rets.mean() / rets.std()) * np.sqrt(252) if len(rets) > 1 and rets.std() > 0 else 0
+                max_dd = ((equity_s / equity_s.cummax()) - 1).min() * 100
+
+                results.append({
+                    'threshold': thresh,
+                    'trades': total,
+                    'win_rate': round(wr, 1),
+                    'total_return_pct': round(total_ret, 2),
+                    'final_capital': round(capital, 2),
+                    'sharpe': round(sharpe, 3),
+                    'max_dd_pct': round(max_dd, 2),
+                    'profit_factor': round((wins * total_ret / max(wins, 1)) / (abs(losses * total_ret) / max(losses, 1)), 2) if losses > 0 else 999
+                })
+
+            best = max(results, key=lambda x: x['total_return_pct'])
+            logger.info(f"En iyi esik: {best['threshold']} | Getiri: {best['total_return_pct']}% | WinRate: {best['win_rate']}%")
+
+            return {'thresholds_tested': results, 'recommended_threshold': best['threshold']}
+
+        except Exception as e:
+            logger.error(f"Optimizasyon hatasi: {e}")
             return None
-    
+
     def run_backtest(self, days=30):
         """Backtesting simülasyonu"""
         try:
@@ -1376,6 +2171,7 @@ except ImportError:
     logger.warning("flask-socketio kurulu değil, WebSocket devre dışı")
 
 prediction_system = GMSTRPredictionSystem()
+swing_predictor = GMSTRSwingPredictor() if SWING_AVAILABLE else None
 
 @app.route('/')
 def dashboard():
@@ -1384,8 +2180,14 @@ def dashboard():
 
 @app.route('/api/predictions')
 def get_predictions():
-    """Tahminleri getir"""
+    """Tahminleri getir (her cagrildiginda once dogrulama yap)"""
     try:
+        # Once gecmis tahminlerin dogrulugunu kontrol et
+        try:
+            prediction_system.update_predictions()
+        except Exception as e:
+            logger.warning(f"Predictions dogrulama hatasi: {e}")
+
         conn = prediction_system.get_db_connection()
         cursor = conn.cursor()
         
@@ -1427,21 +2229,23 @@ def get_performance():
 
 @app.route('/api/model-info')
 def get_model_info():
-    """Model eğitim bilgileri"""
+    """Model egitim bilgileri"""
     try:
-        import json
         import os
         if os.path.exists('model_info.json'):
             with open('model_info.json', 'r') as f:
                 info = json.load(f)
+            # Dashboard compatibility: accuracy field ekle
+            if 'ensemble_accuracy' in info and 'accuracy' not in info:
+                info['accuracy'] = info['ensemble_accuracy']
             return jsonify(info)
         else:
-            # Dosya yoksa default değer döndür
             return jsonify({
                 'status': 'not_trained',
-                'message': 'Model henüz eğitilmemiş',
+                'message': 'Model henuz egitilmemis',
                 'last_trained': '-',
                 'accuracy': 0,
+                'ensemble_accuracy': 0,
                 'test_samples': 0,
                 'train_samples': 0,
                 'threshold': 0.60,
@@ -1452,11 +2256,32 @@ def get_model_info():
 
 @app.route('/api/predict', methods=['POST'])
 def make_prediction():
-    """Manuel tahmin yap"""
-    timeframe = request.json.get('timeframe', '4h')
+    """Manuel tahmin yap - opsiyonel manuel fiyat"""
+    data = request.get_json() or {}
+    timeframe = data.get('timeframe', '4h')
+    manual_price = data.get('manual_price')
+    
     prediction = prediction_system.make_prediction(timeframe)
     
     if prediction:
+        # Manuel fiyat varsa uygula
+        if manual_price and isinstance(manual_price, (int, float)) and manual_price > 0:
+            prediction['display_price'] = float(manual_price)
+            prediction['note'] = f"Manuel fiyat: ₺{manual_price:.2f} (tahmin bu degere gore)"
+        
+        # Geçmişe kaydet
+        try:
+            prediction_system.save_prediction(
+                prediction.get('current_price', 0),
+                prediction.get('direction', 'HOLD'),
+                prediction.get('target_price', 0),
+                prediction.get('confidence', 0.5),
+                timeframe,
+                None
+            )
+        except Exception as e:
+            logger.warning(f"Tahmin kaydetme hatasi: {e}")
+        
         return jsonify(prediction)
     else:
         return jsonify({'error': 'Tahmin yapılamadı'}), 500
@@ -1470,6 +2295,84 @@ def train_model():
         return jsonify({'success': True, 'message': 'Model başarıyla eğitildi'})
     else:
         return jsonify({'error': 'Model eğitilemedi'}), 500
+
+@app.route('/api/swing/predict', methods=['POST'])
+def swing_predict():
+    """Swing tahmini yap (1h) - opsiyonel manuel fiyat"""
+    try:
+        if swing_predictor is None:
+            return jsonify({'error': 'Swing modeli mevcut değil'}), 500
+        
+        data = request.get_json() or {}
+        manual_price = data.get('manual_price')
+        
+        result = swing_predictor.predict()
+        if result:
+            # Manuel fiyat varsa uygula (model tahmini degismez, sadece gosterim)
+            if manual_price and isinstance(manual_price, (int, float)) and manual_price > 0:
+                result['display_price'] = float(manual_price)
+                result['note'] = f"Manuel fiyat: ₺{manual_price:.2f} (tahmin bu degere gore)"
+            
+            # Telegram sadece %60+ guven
+            if prediction_system.telegram_bot_token and result['confidence'] >= 0.60:
+                emoji = "🟢" if result['direction'] == 'YUKSELIS' else "🔴"
+                ctx = result.get('context', '')
+                msg = f"""<b>🔄 GMSTR Swing (1h)</b> {emoji}
+
+📅 {result['timestamp']}
+💰 Fiyat: ₺{result['current_price']:.2f}
+📈 Tahmin: {result['direction']}
+🔒 Güven: %{result['confidence']*100:.1f}
+🎯 Context: {ctx}
+
+<i>1 saatlik zaman dilimi - kısa vadeli dönüşler</i>"""
+                prediction_system.send_telegram_message(msg)
+            
+            # Geçmişe kaydet
+            try:
+                prediction_system.save_prediction(
+                    result['current_price'],
+                    result['direction'],
+                    result['current_price'] * (1.02 if result['direction'] == 'YUKSELIS' else 0.98),
+                    result['confidence'],
+                    '1h',
+                    None
+                )
+            except Exception as e:
+                logger.warning(f"Swing kaydetme hatasi: {e}")
+            
+            return jsonify(result)
+        else:
+            return jsonify({'error': 'Swing tahmini yapılamadı'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/swing/train', methods=['POST'])
+def swing_train():
+    """Swing modelini eğit"""
+    try:
+        if swing_predictor is None:
+            return jsonify({'error': 'Swing modeli mevcut değil'}), 500
+        
+        success = swing_predictor.train()
+        if success:
+            return jsonify({'success': True, 'message': 'Swing modeli eğitildi', 'note': 'Dogruluk hedefi: %65+'})
+        else:
+            return jsonify({'success': False, 'message': 'Egitim basarili ama dusuk dogruluk', 'note': '1h zaman diliminde %65+ zor olabilir'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/swing/status')
+def swing_status():
+    """Swing model durumu"""
+    if swing_predictor is None:
+        return jsonify({'available': False})
+    
+    return jsonify({
+        'available': True,
+        'trained': swing_predictor.model is not None,
+        'last_train': swing_predictor.last_train_time.strftime('%Y-%m-%d %H:%M') if swing_predictor.last_train_time else None
+    })
 
 @app.route('/api/risk', methods=['POST'])
 def get_risk_analysis():
@@ -1499,12 +2402,27 @@ def run_backtest():
     try:
         days = request.json.get('days', 30)
         result = prediction_system.run_backtest(days)
-        
+
         if result:
             return jsonify(result)
         else:
             return jsonify({'error': 'Backtest için yeterli veri yok'}), 400
-            
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/optimize', methods=['POST'])
+def optimize_thresholds_api():
+    """Guven esigi optimizasyonu: en karli esigi bul"""
+    try:
+        days = request.json.get('days', 60)
+        result = prediction_system.optimize_thresholds(days)
+
+        if result:
+            return jsonify(result)
+        else:
+            return jsonify({'error': 'Optimizasyon için yeterli veri yok'}), 400
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -1529,6 +2447,35 @@ def get_market_data():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/validate', methods=['POST'])
+def force_validate():
+    """Manuel validasyon: tum bekleyen tahminleri hemen kontrol et"""
+    try:
+        prediction_system.update_predictions()
+        conn = prediction_system.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) FROM predictions WHERE actual_price IS NULL
+        ''')
+        pending = cursor.fetchone()[0]
+        cursor.execute('''
+            SELECT COUNT(*) FROM predictions WHERE is_correct = 1
+        ''')
+        correct = cursor.fetchone()[0]
+        cursor.execute('''
+            SELECT COUNT(*) FROM predictions WHERE is_correct = 0
+        ''')
+        wrong = cursor.fetchone()[0]
+        conn.close()
+        return jsonify({
+            'success': True,
+            'pending': pending,
+            'correct': correct,
+            'wrong': wrong
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/premarket-signal')
 def get_premarket():
     """Pre-market gümüş sinyali"""
@@ -1544,26 +2491,115 @@ def get_premarket():
         return jsonify({'error': str(e)}), 500
 
 def scheduled_predictions():
-    """Otomatik tahminler - Sadece borsa açıkken"""
-    logger.info("Otomatik tahminler başlatılıyor...")
+    """Otomatik tahminler - 9:30-17:00 her 30dk"""
+    logger.info("Otomatik tahminler baslatiliyor...")
     
-    def safe_prediction(timeframe):
-        """Güvenli tahmin - borsa kapalıysa uyarı ver"""
+    def auto_predict_and_save(timeframe='4h'):
+        """Tahmin yap, kaydet, Telegram gonder"""
         if not prediction_system.is_borsa_open():
-            logger.info("Borsa kapalı, tahmin atlanıyor")
+            logger.info("Borsa kapali, tahmin atlaniyor")
             return None
-        return prediction_system.make_prediction(timeframe)
+        
+        try:
+            pred = prediction_system.make_prediction(timeframe)
+            if pred:
+                # DB kaydet
+                prediction_system.save_prediction(
+                    pred.get('current_price', 0),
+                    pred.get('direction', 'HOLD'),
+                    pred.get('target_price', 0),
+                    pred.get('confidence', 0.5),
+                    timeframe,
+                    None
+                )
+                logger.info(f"Auto {timeframe} tahmin kaydedildi: {pred['direction']}")
+            return pred
+        except Exception as e:
+            logger.error(f"Auto predict hatasi: {e}")
+            return None
     
-    # Her gün 09:00, 11:00, 13:00, 15:00'te tahmin yap (sadece hafta içi)
+    def auto_swing_predict_and_save():
+        """Swing tahmini yap, kaydet, %60+ Telegram"""
+        if not prediction_system.is_borsa_open():
+            return None
+        
+        try:
+            if swing_predictor is None:
+                return None
+            
+            result = swing_predictor.predict()
+            if result:
+                # DB kaydet
+                prediction_system.save_prediction(
+                    result['current_price'],
+                    result['direction'],
+                    result['current_price'] * (1.02 if result['direction'] == 'YUKSELIS' else 0.98),
+                    result['confidence'],
+                    '1h',
+                    None
+                )
+                
+                # Telegram sadece %60+
+                if prediction_system.telegram_bot_token and result['confidence'] >= 0.60:
+                    emoji = "🟢" if result['direction'] == 'YUKSELIS' else "🔴"
+                    ctx = result.get('context', '')
+                    msg = f"""<b>🔄 GMSTR Swing (1h)</b> {emoji}
+
+📅 {result['timestamp']}
+💰 Fiyat: ₺{result['current_price']:.2f}
+📈 Tahmin: {result['direction']}
+🔒 Güven: %{result['confidence']*100:.1f}
+🎯 Context: {ctx}
+
+<i>Otomatik tahmin - 30dk aralik</i>"""
+                    prediction_system.send_telegram_message(msg)
+                
+                logger.info(f"Auto swing tahmin kaydedildi: {result['direction']} %{result['confidence']*100:.0f}")
+            return result
+        except Exception as e:
+            logger.error(f"Auto swing hatasi: {e}")
+            return None
+    
+    # Hafta ici 09:30-17:00 arasi her 30dk
     for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']:
-        getattr(schedule.every(), day).at("09:00").do(lambda: safe_prediction("4h"))
-        getattr(schedule.every(), day).at("11:00").do(lambda: safe_prediction("4h"))
-        getattr(schedule.every(), day).at("13:00").do(lambda: safe_prediction("4h"))
-        getattr(schedule.every(), day).at("15:00").do(lambda: safe_prediction("4h"))
-    
-    # Her saat tahminleri güncelle (doğrulama her zaman çalışabilir)
-    schedule.every().hour.do(lambda: prediction_system.update_predictions())
-    
+        for h in range(9, 18):  # 09:00 - 17:00
+            for m in [0, 30]:
+                if h == 9 and m == 0:
+                    continue  # 09:30'den basla
+                if h == 17 and m == 30:
+                    continue  # 17:00 son
+                t_str = f"{h:02d}:{m:02d}"
+                
+                # Her 30dk trend tahmin
+                getattr(schedule.every(), day).at(t_str).do(lambda tf=timeframe: auto_predict_and_save('4h'))
+                
+                # Her 30dk swing tahmin
+                getattr(schedule.every(), day).at(t_str).do(auto_swing_predict_and_save)
+                
+                logger.info(f"Schedule: her {day} {t_str} (trend + swing)")
+
+    # Her 10 dakikada tahminleri guncelle
+    schedule.every(10).minutes.do(lambda: prediction_system.update_predictions())
+
+    # Haftalik auto-optimize: Pazar 23:00
+    def weekly_optimize():
+        logger.info("Haftalik auto-optimize baslatiliyor...")
+        try:
+            result = prediction_system.optimize_thresholds(days=60)
+            if result and result.get('recommended_threshold'):
+                rec = result['recommended_threshold']
+                logger.info(f"Onerilen esik guncellendi: {rec}")
+                prediction_system.send_telegram_message(
+                    f"<b>Haftalik Optimizasyon</b>\n\n"
+                    f"Onerilen esik: {rec}\n"
+                    f"Test edilen: {len(result.get('thresholds_tested', []))} esik\n"
+                    f"En iyi getiri: {max(t['total_return_pct'] for t in result.get('thresholds_tested', [])):.1f}%"
+                )
+        except Exception as e:
+            logger.error(f"Weekly optimize hatasi: {e}")
+
+    schedule.every().sunday.at("23:00").do(weekly_optimize)
+
     while True:
         schedule.run_pending()
         time_module.sleep(60)

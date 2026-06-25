@@ -333,7 +333,9 @@
                     <span id="marketStatus" style="margin-right: 10px; font-weight: bold;"></span>
                     <button class="btn" onclick="makePrediction()">Yeni Tahmin Yap</button>
                     <button class="btn" onclick="trainModel()">Modeli Eğit</button>
+                    <button class="btn" onclick="swingPredict()" style="background: linear-gradient(135deg, #ff6b6b 0%, #feca57 100%);">🔄 Swing Tahmin</button>
                     <button class="btn" onclick="runBacktest()">Backtest Çalıştır</button>
+                    <input type="number" id="manualPrice" placeholder="Manuel fiyat (opsiyonel)" step="0.01" style="padding: 8px 12px; border-radius: 6px; border: 1px solid #ddd; width: 160px; font-size: 0.85rem;">
                 </div>
             </div>
             <!-- Model Bilgileri Kartı -->
@@ -408,7 +410,27 @@
                 </div>
             </div>
             
-            <div id="predictionsContainer">
+            <!-- Swing Sonuc -->
+            <div id="swingResult" style="display: none; background: linear-gradient(135deg, #ff6b6b 0%, #feca57 100%); border-radius: 10px; padding: 20px; margin-bottom: 20px; color: white;">
+                <div style="display: flex; gap: 20px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
+                    <div>
+                        <div style="font-size: 0.9rem; opacity: 0.9;">🔄 Swing Tahmin (1h)</div>
+                        <div style="font-size: 2.5rem; font-weight: bold;" id="swingDirection">-</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="font-size: 0.9rem; opacity: 0.9;">Güven</div>
+                        <div style="font-size: 1.8rem; font-weight: bold;" id="swingConfidence">-</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="font-size: 0.9rem; opacity: 0.9;">Fiyat</div>
+                        <div style="font-size: 1.5rem; font-weight: bold;" id="swingPrice">-</div>
+                    </div>
+                </div>
+                <div style="margin-top: 10px; font-size: 0.9rem; opacity: 0.9;" id="swingContext">-</div>
+                <div style="margin-top: 5px; font-size: 0.85rem; opacity: 0.7;" id="swingNote">1 saatlik zaman dilimi - kısa vadeli dönüşler</div>
+            </div>
+            
+            <div id="predictionsContainer" style="max-height: 400px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px;">
                 <div class="loading">
                     <div class="spinner"></div>
                     <div>Tahminler yükleniyor...</div>
@@ -689,13 +711,17 @@
             button.disabled = true;
             button.textContent = 'Tahmin Yapılıyor...';
             
+            const manualPrice = document.getElementById('manualPrice').value;
+            const payload = {};
+            if (manualPrice) payload.manual_price = parseFloat(manualPrice);
+            
             try {
                 const response = await fetch('/api/predict', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ timeframe: '4h' })
+                    body: JSON.stringify(payload)
                 });
                 
                 const result = await response.json();
@@ -742,6 +768,50 @@
             } finally {
                 button.disabled = false;
                 button.textContent = 'Modeli Eğit';
+            }
+        }
+        
+        async function swingPredict() {
+            const button = event.target;
+            button.disabled = true;
+            button.textContent = 'Swing Tahmin Yapılıyor...';
+            
+            const manualPrice = document.getElementById('manualPrice').value;
+            const payload = {};
+            if (manualPrice) payload.manual_price = parseFloat(manualPrice);
+            
+            try {
+                const response = await fetch('/api/swing/predict', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    alert('Swing tahmini yapılamadı: ' + data.error);
+                } else {
+                    document.getElementById('swingResult').style.display = 'block';
+                    document.getElementById('swingDirection').textContent = data.direction;
+                    document.getElementById('swingConfidence').textContent = (data.confidence * 100).toFixed(1) + '%';
+                    const priceToShow = data.display_price || data.current_price;
+                    document.getElementById('swingPrice').textContent = '₺' + priceToShow.toFixed(2);
+                    document.getElementById('swingContext').textContent = (data.context || '') + (data.rsi ? ' | RSI: ' + data.rsi.toFixed(1) : '');
+                    const noteText = data.note ? (data.note + ' | ') : '';
+                    document.getElementById('swingNote').textContent = noteText + data.timestamp + ' | 1h zaman dilimi';
+                    
+                    const resultDiv = document.getElementById('swingResult');
+                    resultDiv.style.background = data.direction === 'YUKSELIS' 
+                        ? 'linear-gradient(135deg, #27ae60 0%, #2ecc71 100%)' 
+                        : 'linear-gradient(135deg, #e74c3c 0%, #c0392b 100%)';
+                }
+            } catch (error) {
+                console.error('Swing tahmin hatası:', error);
+                alert('Swing tahmini yapılamadı');
+            } finally {
+                button.disabled = false;
+                button.textContent = '🔄 Swing Tahmin';
             }
         }
         

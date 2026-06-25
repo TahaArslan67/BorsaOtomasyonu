@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from ta.volatility import AverageTrueRange
-from ta.trend import EMAIndicator
+from ta.trend import EMAIndicator, ADXIndicator
 from ta.momentum import RSIIndicator
 import logging
 
@@ -66,7 +66,8 @@ class MultiIndicatorStrategy:
                  vwap_window=100,
                  ema_trend_period=200,
                  super_trend_period=10,
-                 super_trend_multiplier=2.0):
+                 super_trend_multiplier=2.0,
+                 adx_threshold=25.0):
         self.atr_period = atr_period
         self.volume_sma_period = volume_sma_period
         self.volume_threshold = volume_threshold
@@ -76,11 +77,12 @@ class MultiIndicatorStrategy:
         self.ema_trend_period = ema_trend_period  # 1h EMA 200 (5m icin 2400 esdegeri)
         self.super_trend_period = super_trend_period
         self.super_trend_multiplier = super_trend_multiplier
+        self.adx_threshold = adx_threshold
 
     def _calculate_indicators(self, df: pd.DataFrame):
         min_len = max(self.atr_period, self.vwap_window, self.ema_trend_period) + 10
         if len(df) < min_len:
-            return None, None, None, None, None
+            return None, None, None, None, None, None
 
         atr = AverageTrueRange(
             high=df['high'], low=df['low'], close=df['close'], window=self.atr_period
@@ -90,6 +92,9 @@ class MultiIndicatorStrategy:
         supertrend, st_direction = calculate_supertrend(
             df, period=self.super_trend_period, multiplier=self.super_trend_multiplier
         )
+        adx = ADXIndicator(
+            high=df['high'], low=df['low'], close=df['close'], window=self.atr_period
+        )
 
         return (
             atr.average_true_range(),
@@ -97,6 +102,7 @@ class MultiIndicatorStrategy:
             ema_trend.ema_indicator(),
             supertrend,
             st_direction,
+            adx.adx(),
         )
 
     def get_1h_trend(self, df_1h: pd.DataFrame):
@@ -114,7 +120,7 @@ class MultiIndicatorStrategy:
         return 0
 
     def get_signal(self, df: pd.DataFrame, df_1h: pd.DataFrame = None) -> str:
-        atr_series, vwap_series, ema_trend_series, st_series, st_dir = self._calculate_indicators(df)
+        atr_series, vwap_series, ema_trend_series, st_series, st_dir, adx_series = self._calculate_indicators(df)
         if atr_series is None:
             return "HOLD"
 
@@ -124,9 +130,11 @@ class MultiIndicatorStrategy:
         current_ema_trend = ema_trend_series.iloc[-1]
         current_st = st_series.iloc[-1]
         current_st_dir = st_dir.iloc[-1]
+        current_adx = adx_series.iloc[-1]
 
         if (pd.isna(current_atr) or pd.isna(current_vwap)
-                or pd.isna(current_ema_trend) or pd.isna(current_st)):
+                or pd.isna(current_ema_trend) or pd.isna(current_st)
+                or pd.isna(current_adx)):
             return "HOLD"
 
         # 1 saatlik trend onayi
@@ -136,8 +144,13 @@ class MultiIndicatorStrategy:
 
         logger.debug(
             f"Close: {current_close:.2f} | EMA200: {current_ema_trend:.2f} | "
-            f"VWAP: {current_vwap:.2f} | ST_dir: {current_st_dir}"
+            f"VWAP: {current_vwap:.2f} | ST_dir: {current_st_dir} | ADX: {current_adx:.1f}"
         )
+
+        # ADX trend gücü filtresi: zayıf trendte işlem yapma
+        if current_adx < self.adx_threshold:
+            logger.debug(f"ADX zayıf ({current_adx:.1f} < {self.adx_threshold}), HOLD")
+            return "HOLD"
 
         # Hacim onayi
         volume_confirmed = False
@@ -157,28 +170,22 @@ class MultiIndicatorStrategy:
         above_vwap = current_close > current_vwap
         below_vwap = current_close < current_vwap
 
-        # SuperTrend sinyali: yön onayi (1 = yukari trend, -1 = asagi trend)
-        # Agresif mod: Sadece SuperTrend yönü yeterli, kesişim beklenmez
+        # SuperTrend sinyali: kesişim onayi
         prev_st_dir = st_dir.iloc[-2] if len(st_dir) > 1 else current_st_dir
-        st_buy_signal = current_st_dir == 1
-        st_sell_signal = current_st_dir == -1
-
-        # Sadece SuperTrend Yönü Stratejisi - Maximum Agresif
-        if st_buy_signal:
-            return "BUY"
-        elif st_sell_signal:
-            return "SELL" if not self.enable_short else "SHORT"
-        return "HOLD"
+        st_cross_up = (prev_st_dir == -1 and current_st_dir == 1)
+        st_cross_down = (prev_st_dir == 1 and current_st_dir == -1)
+        st_buy_signal = st_cross_up
+        st_sell_signal = st_cross_down
 
         signal = "HOLD"
 
-        # Long: 1h yukari trend + 5m EMA200 ustu + VWAP ustu + SuperTrend AL sinyali
+        # Long: 1h yukari trend + 5m EMA200 ustu + VWAP ustu + SuperTrend AL kesişimi + hacim onayi + ADX onayi
         if (trend_1h == 1 and above_ema200_5m and above_vwap
-                and st_buy_signal and volume_confirmed):
+                and st_buy_signal and volume_confirmed and current_adx >= self.adx_threshold):
             signal = "BUY"
-        # Short: 1h asagi trend + 5m EMA200 alti + VWAP alti + SuperTrend SAT sinyali
+        # Short: 1h asagi trend + 5m EMA200 alti + VWAP alti + SuperTrend SAT kesişimi + hacim onayi + ADX onayi
         elif (trend_1h == -1 and below_ema200_5m and below_vwap
-                  and st_sell_signal and volume_confirmed):
+                  and st_sell_signal and volume_confirmed and current_adx >= self.adx_threshold):
             if self.enable_short:
                 signal = "SHORT"
             else:
@@ -188,7 +195,7 @@ class MultiIndicatorStrategy:
 
     def get_super_trend_direction(self, df: pd.DataFrame):
         """Mevcut SuperTrend yönünü döndür: 1=yukari, -1=asagi, 0=belirsiz"""
-        _, _, _, _, st_dir = self._calculate_indicators(df)
+        _, _, _, _, st_dir, _ = self._calculate_indicators(df)
         if st_dir is None:
             return 0
         current_st_dir = st_dir.iloc[-1]
@@ -197,7 +204,7 @@ class MultiIndicatorStrategy:
         return int(current_st_dir)
 
     def get_last_atr(self, df: pd.DataFrame):
-        atr_series, _, _, _, _ = self._calculate_indicators(df)
+        atr_series, _, _, _, _, _ = self._calculate_indicators(df)
         if atr_series is None:
             return None
         return atr_series.iloc[-1]

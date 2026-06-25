@@ -18,10 +18,13 @@ from config import (
     SUPER_TREND_MULTIPLIER,
     TIMEFRAME_1H,
     TRAILING_ATR_MULTIPLIER,
+    ADX_THRESHOLD,
 )
 from exchange_client import ExchangeClient
 from strategy import MultiIndicatorStrategy
 from portfolio import PaperPortfolio
+from gmstr_prediction_system import GMSTRPredictionSystem
+from gmstr_enhanced.news_analyzer import get_analyzer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,7 +38,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def process_symbol(client, strategy, portfolio, symbol, timeframe):
+def process_symbol(client, strategy, portfolio, symbol, timeframe,
+                     gmstr_system=None, news_analyzer=None):
     df = client.fetch_ohlcv(symbol, timeframe)
     if df.empty or len(df) < 50:
         return
@@ -52,6 +56,34 @@ def process_symbol(client, strategy, portfolio, symbol, timeframe):
     signal = strategy.get_signal(df, df_1h=df_1h_window)
     current_price = df['close'].iloc[-1]
     atr = strategy.get_last_atr(df)
+
+    # ML + Haber Filtresi (GMSTR sembolleri icin)
+    if gmstr_system and news_analyzer and "GMSTR" in symbol.upper():
+        try:
+            pred = gmstr_system.make_prediction(timeframe="4h")
+            news = news_analyzer.fetch_news(count=12)
+            sentiment = news_analyzer.get_news_sentiment_score(news)
+
+            if pred:
+                ml_confidence = pred.get('confidence', 0)
+                ml_direction = pred.get('direction', '')
+
+                if ml_confidence < 0.55:
+                    logger.info(f"[{symbol}] ML guven dusuk ({ml_confidence:.2f}), sinyal iptal")
+                    signal = "HOLD"
+                elif (ml_direction == "YUKSELIS" and signal in ("SELL", "SHORT")) or \
+                     (ml_direction == "DUSUS" and signal == "BUY"):
+                    logger.info(f"[{symbol}] ML yonu ({ml_direction}) teknik sinyalle celisiyor, HOLD")
+                    signal = "HOLD"
+
+            if sentiment and signal == "BUY" and sentiment.get('overall_score', 0) < -0.5:
+                logger.info(f"[{symbol}] Haber skoru negatif ({sentiment['overall_score']}), AL iptal")
+                signal = "HOLD"
+            if sentiment and signal in ("SELL", "SHORT") and sentiment.get('overall_score', 0) > 0.5:
+                logger.info(f"[{symbol}] Haber skoru pozitif ({sentiment['overall_score']}), SAT iptal")
+                signal = "HOLD"
+        except Exception as e:
+            logger.warning(f"[{symbol}] ML/Haber filtresi hatasi: {e}")
 
     total_value = portfolio.get_total_value(current_price)
     pos_type = "LONG" if portfolio.balance_asset > 0 else ("SHORT" if portfolio.short_position else "NONE")
@@ -114,15 +146,20 @@ def main():
         ema_trend_period=EMA_TREND_PERIOD,
         super_trend_period=SUPER_TREND_PERIOD,
         super_trend_multiplier=SUPER_TREND_MULTIPLIER,
+        adx_threshold=ADX_THRESHOLD,
     )
 
     portfolios = {symbol: PaperPortfolio() for symbol in SYMBOL_LIST}
+
+    gmstr_system = GMSTRPredictionSystem()
+    news_analyzer = get_analyzer()
 
     try:
         while True:
             for symbol in SYMBOL_LIST:
                 try:
-                    process_symbol(client, strategy, portfolios[symbol], symbol, TIMEFRAME)
+                    process_symbol(client, strategy, portfolios[symbol], symbol, TIMEFRAME,
+                                   gmstr_system=gmstr_system, news_analyzer=news_analyzer)
                 except Exception as e:
                     logger.exception(f"[{symbol}] Islem hatasi: {e}")
 
