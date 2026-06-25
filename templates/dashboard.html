@@ -537,11 +537,18 @@
                     document.getElementById('premarketConfidence').textContent = `${(data.confidence * 100).toFixed(1)}%`;
                     document.getElementById('premarketReason').textContent = data.reason;
                 } else {
-                    card.style.display = 'none';
+                    // Hata olsa bile kartı göster, placeholder ver
+                    card.style.display = 'block';
+                    document.getElementById('premarketSignal').textContent = 'Veri Yok';
+                    document.getElementById('premarketSignal').style.color = '#fff';
+                    document.getElementById('premarketReason').textContent = 'Veri çekilemedi, tekrar deneniyor...';
                 }
             } catch (error) {
                 console.error('Pre-market sinyali yüklenemedi:', error);
-                document.getElementById('premarketCard').style.display = 'none';
+                // Hata olsa bile kartı göster
+                card.style.display = 'block';
+                document.getElementById('premarketSignal').textContent = 'Hata';
+                document.getElementById('premarketReason').textContent = 'Bağlantı hatası, tekrar deneniyor...';
             }
         }
         
