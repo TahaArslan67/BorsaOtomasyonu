@@ -1,0 +1,9 @@
+{
+  "last_trained": "2026-06-25 09:32:52",
+  "accuracy": 0.9197,
+  "test_samples": 610,
+  "train_samples": 2436,
+  "status": "success",
+  "threshold": 0.6,
+  "features_used": 26
+}

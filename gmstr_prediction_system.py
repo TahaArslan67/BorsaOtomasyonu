@@ -1016,84 +1016,115 @@ class GMSTRPredictionSystem:
         """Borsa kapalıyken gümüş hareketine göre açılış sinyali - GMSTR kapanış anındaki gümüş fiyatından hesapla"""
         try:
             # Cache kontrol - 5 dakika
-            now = time_module.time()
-            if hasattr(self, '_premarket_cache') and self._premarket_cache and hasattr(self, '_premarket_cache_time') and (now - self._premarket_cache_time) < 300:
+            cache_now = time_module.time()
+            if hasattr(self, '_premarket_cache') and self._premarket_cache and hasattr(self, '_premarket_cache_time') and (cache_now - self._premarket_cache_time) < 300:
                 logger.info("Pre-market sinyali cache'den alındı")
                 return self._premarket_cache
             
-            # GMSTR son kapanış fiyatı ve zamanı
+            now = datetime.now()
+            market_close = time(18, 10)
+            
+            # Son kapanış tarihini belirle
+            # Borsa hafta içi 09:00-18:10 açık
+            if now.weekday() >= 5:  # Cumartesi(5) veya Pazar(6)
+                days_back = now.weekday() - 4  # Cuma'ya git
+                last_close_date = (now - timedelta(days=days_back)).date()
+            elif now.time() < market_close:
+                # Henüz kapanmadı (sabah), dünün kapanışını kullan
+                last_close_date = (now - timedelta(days=1)).date()
+            else:
+                # Bugün kapanmış
+                last_close_date = now.date()
+            
+            # GMSTR verilerini çek (günlük veri kapanış fiyatını verir)
             gmstr = yf.Ticker("GMSTR.IS")
             gmstr_data = gmstr.history(period="5d")
             if gmstr_data.empty:
                 return None
-            gmstr_last_close = gmstr_data['Close'].iloc[-1]
-            # Yahoo Finance günlük veri saatini 00:00 verir, ama gerçek kapanış 18:10
-            gmstr_date = gmstr_data.index[-1]
-            gmstr_close_time = gmstr_date.replace(hour=18, minute=10, second=0, microsecond=0)
+            
+            # Son kapanış gününün verisini bul
+            gmstr_day = gmstr_data[gmstr_data.index.date == last_close_date]
+            if gmstr_day.empty:
+                # Bulunamadı, son veriyi kullan
+                gmstr_last_close = float(gmstr_data['Close'].iloc[-1])
+                last_close_date = gmstr_data.index[-1].date()
+            else:
+                gmstr_last_close = float(gmstr_day['Close'].iloc[-1])
+            
+            gmstr_close_dt = datetime.combine(last_close_date, market_close)
             
             # Gerçek gümüş (SI=F) verisi - SAATLİK interval
             silver = yf.Ticker("SI=F")
-            silver_data = silver.history(period="7d", interval="1h")  # 7/24 açık olduğu için 1h
+            silver_data = silver.history(period="7d", interval="1h")
             if silver_data.empty:
                 return None
-            silver_current = silver_data['Close'].iloc[-1]
+            silver_current = float(silver_data['Close'].iloc[-1])
             
-            # GMSTR kapanış anındaki gümüş fiyatını bul (en yakın zaman)
+            # GMSTR kapanış anındaki gümüş fiyatını bul (18:10 veya öncesindeki son veri)
             silver_at_gmstr_close = None
             for i in range(len(silver_data)-1, -1, -1):
-                if silver_data.index[i] <= gmstr_close_time:
-                    silver_at_gmstr_close = silver_data['Close'].iloc[i]
-                    break
+                if silver_data.index[i].date() == last_close_date:
+                    # Aynı gün içinde 18:10 veya öncesi
+                    if silver_data.index[i].hour <= 18:
+                        silver_at_gmstr_close = float(silver_data['Close'].iloc[i])
+                        break
             
             if silver_at_gmstr_close is None:
-                silver_at_gmstr_close = silver_data['Close'].iloc[0]  # En erken bulunabilen
+                # Aynı gün bulunamadı, o günün ilk verisini veya son bulunabileni al
+                for i in range(len(silver_data)-1, -1, -1):
+                    if silver_data.index[i].date() == last_close_date:
+                        silver_at_gmstr_close = float(silver_data['Close'].iloc[i])
+                        break
             
-            # Gümüşteki değişim = (Şimdi - Kapanış anındaki) / Kapanış anındaki
+            if silver_at_gmstr_close is None:
+                # Hiç bulunamadı, son veriyi kullan
+                silver_at_gmstr_close = float(silver_data['Close'].iloc[0])
+            
+            # Gümüşteki değişim
             silver_change_pct = ((silver_current - silver_at_gmstr_close) / silver_at_gmstr_close) * 100
             
-            logger.info(f"Pre-market: GMSTR kapandığında gümüş={silver_at_gmstr_close:.2f}, Şimdi={silver_current:.2f}, Değişim={silver_change_pct:.2f}%")
+            logger.info(f"Pre-market: Son kapanış={last_close_date}, GMSTR={gmstr_last_close:.2f}, Gümüş 18:10={silver_at_gmstr_close:.2f}, Şimdi={silver_current:.2f}, Değişim={silver_change_pct:.2f}%")
             
             # Sinyal oluştur
             if silver_change_pct > 1.5:
                 signal = "STRONG_BUY"
                 direction = "YÜKSELİŞ"
                 confidence = min(0.70 + abs(silver_change_pct) * 0.02, 0.95)
-                reason = f"GMSTR kapanışından beri gümüş %{silver_change_pct:.2f} yükseldi"
+                reason = f"Son kapanıştan beri gümüş %{silver_change_pct:.2f} yükseldi"
             elif silver_change_pct > 0.5:
                 signal = "BUY"
                 direction = "YÜKSELİŞ"
                 confidence = min(0.60 + abs(silver_change_pct) * 0.05, 0.75)
-                reason = f"GMSTR kapanışından beri gümüş %{silver_change_pct:.2f} yükseldi"
+                reason = f"Son kapanıştan beri gümüş %{silver_change_pct:.2f} yükseldi"
             elif silver_change_pct < -1.5:
                 signal = "STRONG_SELL"
                 direction = "DÜŞÜŞ"
                 confidence = min(0.70 + abs(silver_change_pct) * 0.02, 0.95)
-                reason = f"GMSTR kapanışından beri gümüş %{abs(silver_change_pct):.2f} düştü"
+                reason = f"Son kapanıştan beri gümüş %{abs(silver_change_pct):.2f} düştü"
             elif silver_change_pct < -0.5:
                 signal = "SELL"
                 direction = "DÜŞÜŞ"
                 confidence = min(0.60 + abs(silver_change_pct) * 0.05, 0.75)
-                reason = f"GMSTR kapanışından beri gümüş %{abs(silver_change_pct):.2f} düştü"
+                reason = f"Son kapanıştan beri gümüş %{abs(silver_change_pct):.2f} düştü"
             else:
                 signal = "HOLD"
                 direction = "YATAY"
                 confidence = 0.55
-                reason = f"GMSTR kapanışından beri gümüş %{silver_change_pct:.2f} değişti (yatay)"
+                reason = f"Son kapanıştan beri gümüş %{silver_change_pct:.2f} değişti (yatay)"
             
             # Hedef fiyat = GMSTR kapanış × gümüş değişimi
             target = gmstr_last_close * (1 + silver_change_pct / 100)
             
-            # Tüm değerleri native Python tiplerine çevir (JSON serialization için)
             result = {
-                'gmstr_last_close': float(gmstr_last_close),
-                'gmstr_close_time': gmstr_close_time.strftime('%d.%m.%Y %H:%M'),
-                'silver_at_close': float(silver_at_gmstr_close),
-                'silver_current': float(silver_current),
-                'silver_change_pct': float(silver_change_pct),
+                'gmstr_last_close': gmstr_last_close,
+                'gmstr_close_time': gmstr_close_dt.strftime('%d.%m.%Y %H:%M'),
+                'silver_at_close': silver_at_gmstr_close,
+                'silver_current': silver_current,
+                'silver_change_pct': silver_change_pct,
                 'signal': signal,
                 'direction': direction,
-                'confidence': float(confidence),
-                'target_price': float(target),
+                'confidence': confidence,
+                'target_price': target,
                 'reason': reason,
                 'timestamp': datetime.now().strftime('%d.%m.%Y %H:%M')
             }
@@ -1106,6 +1137,8 @@ class GMSTRPredictionSystem:
             
         except Exception as e:
             logger.error(f"Pre-market sinyal hatası: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             if hasattr(self, '_premarket_cache') and self._premarket_cache:
                 return self._premarket_cache
             return None
