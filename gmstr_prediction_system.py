@@ -1083,16 +1083,17 @@ class GMSTRPredictionSystem:
             # Hedef fiyat = GMSTR kapanış × gümüş değişimi
             target = gmstr_last_close * (1 + silver_change_pct / 100)
             
+            # Tüm değerleri native Python tiplerine çevir (JSON serialization için)
             result = {
-                'gmstr_last_close': gmstr_last_close,
+                'gmstr_last_close': float(gmstr_last_close),
                 'gmstr_close_time': gmstr_close_time.strftime('%d.%m.%Y %H:%M'),
-                'silver_at_close': silver_at_gmstr_close,
-                'silver_current': silver_current,
-                'silver_change_pct': silver_change_pct,
+                'silver_at_close': float(silver_at_gmstr_close),
+                'silver_current': float(silver_current),
+                'silver_change_pct': float(silver_change_pct),
                 'signal': signal,
                 'direction': direction,
-                'confidence': confidence,
-                'target_price': target,
+                'confidence': float(confidence),
+                'target_price': float(target),
                 'reason': reason,
                 'timestamp': datetime.now().strftime('%d.%m.%Y %H:%M')
             }

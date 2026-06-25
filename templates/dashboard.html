@@ -511,8 +511,13 @@
             try {
                 const response = await fetch('/api/premarket-signal');
                 const data = await response.json();
+                console.log('Pre-market API response:', data);
                 
                 const card = document.getElementById('premarketCard');
+                if (!card) {
+                    console.error('premarketCard elementi bulunamadı!');
+                    return;
+                }
                 
                 if (data && !data.error) {
                     card.style.display = 'block';
