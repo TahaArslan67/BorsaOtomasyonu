@@ -1,5 +1,5 @@
 {
-  "last_trained": "2026-06-26 11:49:08",
+  "last_trained": "2026-06-26 12:01:51",
   "lgbm_accuracy": 0.6873,
   "filtered_accuracy": 0.8421,
   "test_samples": 566,
