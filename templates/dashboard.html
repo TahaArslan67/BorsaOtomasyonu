@@ -683,7 +683,13 @@
                     <div class="card-header">
                         <div>
                             <div class="card-title">📈 Tahmin Grafiği</div>
-                            <div class="card-subtitle">Fiyat ve tahmin geçmişi</div>
+                            <div class="card-subtitle" id="chartSubtitle">Fiyat ve normal + swing tahmin geçmişi</div>
+                            <div class="accuracy-display" id="accuracyDisplay" style="margin-top: 6px; font-size: 0.85rem; color: var(--text-secondary);">Doğruluk: --</div>
+                        </div>
+                        <div class="btn-group">
+                            <button class="btn btn-outline" onclick="setChartRange(1)">1G</button>
+                            <button class="btn btn-outline" onclick="setChartRange(7)">1H</button>
+                            <button class="btn btn-outline" onclick="setChartRange(30)">1A</button>
                         </div>
                     </div>
                     <div class="chart-container">
@@ -921,7 +927,7 @@
         // Sayfa yüklendiğinde verileri getir
         document.addEventListener('DOMContentLoaded', function() {
             loadPerformance();
-            loadPredictions();
+            loadPredictions(currentChartDays);
             checkModelStatus();
             loadMarketData();
             checkMarketStatus();
@@ -932,12 +938,11 @@
             // Her 5 dakikada bir verileri güncelle
             setInterval(() => {
                 loadPerformance();
-                loadPredictions();
+                loadPredictions(currentChartDays);
                 loadMarketData();
                 checkMarketStatus();
                 loadPremarketSignal();
                 loadModelInfo();
-            loadSettings();
             }, 5 * 60 * 1000);
         });
         
@@ -1046,16 +1051,92 @@
             }
         }
         
-        async function loadPredictions() {
+        let currentChartDays = 7;
+        let marketPrices = [];
+        
+        async function loadPredictions(days = currentChartDays) {
+            currentChartDays = days;
             try {
-                const response = await fetch('/api/predictions');
-                predictions = await response.json();
+                const predPromise = fetch('/api/predictions?days=' + days + '&model_type=all&min_confidence=0.60');
+                const pricePromise = fetch('/api/market-prices?days=' + days);
+                const normalAccPromise = fetch('/api/prediction-accuracy?days=' + days + '&model_type=normal&min_confidence=0.60');
+                const swingAccPromise = fetch('/api/prediction-accuracy?days=' + days + '&model_type=swing&min_confidence=0.60');
                 
+                const [predResponse, priceResponse, normalAccResponse, swingAccResponse] = await Promise.all([
+                    predPromise, pricePromise, normalAccPromise, swingAccPromise
+                ]);
+                
+                predictions = await predResponse.json();
+                const priceData = await priceResponse.json();
+                marketPrices = priceData.prices || [];
+                const normalAcc = await normalAccResponse.json();
+                const swingAcc = await swingAccResponse.json();
+                
+                renderAccuracy(normalAcc, swingAcc, days);
                 renderPredictions();
                 renderChart();
+                updateChartButtons(days);
             } catch (error) {
                 console.error('Tahminler yüklenemedi:', error);
                 document.getElementById('predictionsContainer').innerHTML = '<div class="loading">Tahminler yüklenemedi</div>';
+                document.getElementById('accuracyDisplay').textContent = 'Doğruluk: --';
+            }
+        }
+        
+        function renderAccuracy(normalAcc, swingAcc, days) {
+            const display = document.getElementById('accuracyDisplay');
+            const subtitle = document.getElementById('chartSubtitle');
+            const fmt = (acc) => acc !== null && acc !== undefined ? (acc * 100).toFixed(1) + '%' : '--';
+            
+            subtitle.textContent = 'Fiyat ve normal + swing tahmin geçmişi';
+            const normalTxt = `Normal: <strong>${fmt(normalAcc.accuracy)}</strong> (${normalAcc.correct}/${normalAcc.total})`;
+            const swingTxt = swingAcc ? `Swing: <strong>${fmt(swingAcc.accuracy)}</strong> (${swingAcc.correct}/${swingAcc.total})` : '';
+            display.innerHTML = normalTxt + (swingTxt ? ' | ' + swingTxt : '') + ' <span style="color: var(--text-secondary);">(güven ≥60%)</span>';
+        }
+        
+        function setChartRange(days) {
+            loadPredictions(days);
+        }
+        
+        function updateChartButtons(activeDays) {
+            document.querySelectorAll("button[onclick^='setChartRange']").forEach(btn => {
+                const day = parseInt(btn.getAttribute('onclick').match(/\d+/)[0]);
+                if (day === activeDays) {
+                    btn.classList.add('active');
+                    btn.style.background = 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))';
+                    btn.style.color = 'white';
+                    btn.style.borderColor = 'transparent';
+                } else {
+                    btn.classList.remove('active');
+                    btn.style.background = 'transparent';
+                    btn.style.color = 'var(--text-secondary)';
+                    btn.style.borderColor = 'var(--border-color)';
+                }
+            });
+        }
+        
+        async function backfillPredictions() {
+            const button = event.target;
+            button.disabled = true;
+            button.textContent = 'Dolduruluyor...';
+            try {
+                const response = await fetch('/api/backfill-predictions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({days: 30})
+                });
+                const result = await response.json();
+                if (result.error) {
+                    alert('Backfill hatasi: ' + result.error);
+                } else {
+                    alert(result.message + ' Islem arka planda calisiyor, birkac dakika sonra 1A butonuna tiklayin.');
+                }
+            } catch (error) {
+                console.error('Backfill hatasi:', error);
+                alert('Backfill baslatilamadi');
+            } finally {
+                button.disabled = false;
+                button.textContent = '📜 1A Doldur';
             }
         }
         
@@ -1118,51 +1199,126 @@
         }
         
         function renderChart() {
-            const ctx = document.getElementById('predictionChart');
-            if (!ctx) return;
+            const container = document.querySelector('.chart-container');
+            let ctx = document.getElementById('predictionChart');
             
-            if (predictions.length === 0) {
-                ctx.parentElement.innerHTML = '<div class="loading">Henüz tahmin verisi yok</div>';
+            // Canvas yoksa veya silinmisse yeniden olustur
+            if (!ctx) {
+                container.innerHTML = '<canvas id="predictionChart"></canvas>';
+                ctx = document.getElementById('predictionChart');
+            }
+            
+            if (marketPrices.length === 0) {
+                container.innerHTML = '<div class="loading">Fiyat verisi yok</div>';
                 return;
             }
             
-            const recent = predictions.slice(-30);
-            const labels = recent.map(p => new Date(p.timestamp).toLocaleDateString('tr-TR', {day: '2-digit', month: 'short', hour: '2-digit'}));
-            const prices = recent.map(p => p.current_price);
-            const targets = recent.map(p => p.predicted_price);
-            const directions = recent.map(p => p.predicted_direction === 'YUKSELIS' || p.predicted_direction === 'YUKSELİŞ' ? 1 : -1);
+            // Zaman ekseni: market fiyatlarinin timestampleri
+            const sortedPrices = [...marketPrices].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            const timePoints = sortedPrices.map(p => new Date(p.timestamp).getTime());
+            const priceMap = {};
+            const timestamps = [];
+            const labels = [];
+            
+            sortedPrices.forEach(p => {
+                const ts = new Date(p.timestamp).getTime();
+                priceMap[ts] = p.close;
+                timestamps.push(p.timestamp);
+                labels.push(new Date(p.timestamp).toLocaleDateString('tr-TR', {day: '2-digit', month: 'short'}) + ' ' + new Date(p.timestamp).toLocaleTimeString('tr-TR', {hour: '2-digit', minute: '2-digit'}));
+            });
+            
+            const prices = timePoints.map(ts => priceMap[ts] || null);
+            
+            // Tahmin noktalarini en yakin market zamanina esle
+            const normalMap = {};
+            const swingMap = {};
+            
+            predictions.forEach(p => {
+                const predTs = new Date(p.timestamp).getTime();
+                // En yakin market zamanini bul (30dk icinde)
+                let closestTs = null;
+                let minDiff = Infinity;
+                timePoints.forEach(ts => {
+                    const diff = Math.abs(ts - predTs);
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        closestTs = ts;
+                    }
+                });
+                
+                // 60dk icindeki eslesmeleri kabul et
+                if (closestTs !== null && minDiff <= 60 * 60 * 1000) {
+                    if (p.model_type === 'swing' || p.timeframe === '1h') {
+                        swingMap[closestTs] = {
+                            price: p.current_price,
+                            direction: p.predicted_direction,
+                            confidence: p.confidence,
+                            target: p.predicted_price
+                        };
+                    } else {
+                        normalMap[closestTs] = p.predicted_price;
+                    }
+                }
+            });
+            
+            const normalTargets = timePoints.map(ts => normalMap[ts] || null);
+            const swingPoints = timePoints.map(ts => swingMap[ts] ? swingMap[ts].price : null);
+            const swingStyles = timePoints.map(ts => {
+                if (!swingMap[ts]) return null;
+                return swingMap[ts].direction === 'YUKSELIS' ? 'triangle' : 'triangleRot';
+            });
+            const swingColors = timePoints.map(ts => {
+                if (!swingMap[ts]) return null;
+                return swingMap[ts].direction === 'YUKSELIS' ? '#22c55e' : '#ef4444';
+            });
             
             if (predictionChart) {
                 predictionChart.destroy();
             }
             
+            const datasets = [
+                {
+                    label: 'Mevcut Fiyat',
+                    data: prices,
+                    borderColor: '#3b82f6',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    tension: 0.2,
+                    fill: true,
+                    pointRadius: 2,
+                    pointBackgroundColor: '#3b82f6'
+                },
+                {
+                    label: 'Normal Hedef (4h)',
+                    data: normalTargets,
+                    borderColor: '#8b5cf6',
+                    backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                    borderDash: [5, 5],
+                    tension: 0.3,
+                    fill: false,
+                    pointRadius: 4,
+                    pointBackgroundColor: '#8b5cf6',
+                    spanGaps: true
+                },
+                {
+                    label: 'Swing Yön (1h)',
+                    data: swingPoints,
+                    borderColor: 'transparent',
+                    backgroundColor: 'transparent',
+                    showLine: false,
+                    fill: false,
+                    pointRadius: 8,
+                    pointStyle: swingStyles,
+                    pointBackgroundColor: swingColors,
+                    pointBorderColor: swingColors,
+                    spanGaps: false
+                }
+            ];
+            
             predictionChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: labels,
-                    datasets: [
-                        {
-                            label: 'Mevcut Fiyat',
-                            data: prices,
-                            borderColor: '#3b82f6',
-                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                            tension: 0.4,
-                            fill: true,
-                            pointRadius: 4,
-                            pointBackgroundColor: '#3b82f6'
-                        },
-                        {
-                            label: 'Hedef Fiyat',
-                            data: targets,
-                            borderColor: '#8b5cf6',
-                            backgroundColor: 'rgba(139, 92, 246, 0.1)',
-                            borderDash: [5, 5],
-                            tension: 0.4,
-                            fill: false,
-                            pointRadius: 4,
-                            pointBackgroundColor: '#8b5cf6'
-                        }
-                    ]
+                    datasets: datasets
                 },
                 options: {
                     responsive: true,
@@ -1170,11 +1326,44 @@
                     plugins: {
                         legend: {
                             labels: { color: '#94a3b8' }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                title: function(context) {
+                                    const idx = context[0].dataIndex;
+                                    return new Date(timestamps[idx]).toLocaleString('tr-TR');
+                                },
+                                label: function(context) {
+                                    const idx = context.dataIndex;
+                                    const val = context.parsed.y;
+                                    if (val === null) return context.dataset.label + ': -';
+                                    if (context.dataset.label === 'Swing Yön (1h)') {
+                                        const s = swingMap[timePoints[idx]];
+                                        if (s) {
+                                            const dir = s.direction === 'YUKSELIS' ? 'YUKSELİŞ' : 'DÜŞÜŞ';
+                                            return `${dir} (1h) | Guven: %${(s.confidence * 100).toFixed(1)} | Fiyat: ₺${val.toFixed(2)}`;
+                                        }
+                                    }
+                                    return context.dataset.label + ': ₺' + val.toFixed(2);
+                                }
+                            }
                         }
                     },
                     scales: {
                         x: {
-                            ticks: { color: '#94a3b8' },
+                            ticks: {
+                                color: '#94a3b8',
+                                maxRotation: 45,
+                                minRotation: 30,
+                                autoSkip: true,
+                                maxTicksLimit: 8
+                            },
+                            title: {
+                                display: true,
+                                text: 'Tahmin Zamanı (gün saat:dakika)',
+                                color: '#94a3b8',
+                                font: { size: 11 }
+                            },
                             grid: { color: 'rgba(148, 163, 184, 0.1)' }
                         },
                         y: {
@@ -1204,6 +1393,7 @@
                             <th>Tahmin</th>
                             <th>Hedef Fiyat</th>
                             <th>Güven</th>
+                            <th>Model</th>
                             <th>Durum</th>
                             <th>📱</th>
                         </tr>
@@ -1225,6 +1415,7 @@
                 }
                 
                 const telegramIcon = pred.telegram_sent ? '✅' : '-';
+                const modelLabel = pred.model_type === 'swing' ? '🔄 Swing' : '📈 Normal';
                 
                 html += `
                     <tr>
@@ -1243,6 +1434,7 @@
                                 <div class="confidence-fill" style="width: ${pred.confidence * 100}%"></div>
                             </div>
                         </td>
+                        <td>${modelLabel}</td>
                         <td>
                             <span class="accuracy-badge ${accuracyClass}">
                                 ${accuracyText}
@@ -1281,7 +1473,7 @@
                     alert('Tahmin yapılamadı: ' + result.error);
                 } else {
                     alert(`Tahmin yapıldı: ${result.direction} - Hedef: ₺${result.target_price.toFixed(2)}`);
-                    loadPredictions();
+                    loadPredictions(currentChartDays);
                 }
             } catch (error) {
                 console.error('Tahmin hatası:', error);
@@ -1358,6 +1550,7 @@
                     
                     // Swing guven grafiği
                     updateSwingChart(data.direction, data.confidence);
+                    loadPredictions(currentChartDays);
                 }
             } catch (error) {
                 console.error('Swing tahmin hatası:', error);

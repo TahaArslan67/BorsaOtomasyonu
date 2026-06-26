@@ -9,6 +9,7 @@ import yfinance as yf
 import requests
 import sqlite3
 from datetime import datetime, timedelta, time
+from dateutil import parser as date_parser
 import schedule
 import time as time_module
 import logging
@@ -169,6 +170,7 @@ class GMSTRPredictionSystem:
                     actual_direction TEXT,
                     is_correct INTEGER,
                     telegram_sent INTEGER DEFAULT 0,
+                    model_type TEXT DEFAULT 'normal',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -236,6 +238,13 @@ class GMSTRPredictionSystem:
                 cursor.execute("ALTER TABLE predictions ADD COLUMN telegram_sent INTEGER DEFAULT 0")
                 logger.info("telegram_sent sütunu eklendi")
             
+            if 'model_type' not in existing_columns:
+                cursor.execute("ALTER TABLE predictions ADD COLUMN model_type TEXT DEFAULT 'normal'")
+                logger.info("model_type sütunu eklendi")
+                # Mevcut swing kayitlarini guncelle (timeframe 1h olanlar, sonradan ayristirmak icin)
+                cursor.execute("UPDATE predictions SET model_type = 'swing' WHERE timeframe = '1h'")
+                logger.info("Mevcut swing tahminleri model_type='swing' olarak isaretlendi")
+            
             # Performans tablosu
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS performance (
@@ -270,10 +279,12 @@ class GMSTRPredictionSystem:
         conn.close()
         logger.info("Veritabanı başlatıldı")
     
-    def fetch_gmstr_data(self, period="2y"):
+    def fetch_gmstr_data(self, period="2y", interval="1h"):
         """GMSTR verilerini çek (cache'li)"""
         now = time_module.time()
-        if self._gmstr_cache is not None and self._gmstr_cache_time and (now - self._gmstr_cache_time) < self._cache_ttl:
+        if (self._gmstr_cache is not None and self._gmstr_cache_time and 
+            (now - self._gmstr_cache_time) < self._cache_ttl and
+            getattr(self, '_gmstr_cache_interval', None) == interval):
             if len(self._gmstr_cache) >= 50:
                 logger.info("GMSTR verisi cache'den alındı")
                 return self._gmstr_cache
@@ -282,9 +293,9 @@ class GMSTRPredictionSystem:
                 self._gmstr_cache = None
         
         try:
-            # Yahoo Finance'den GMSTR verisi (1h max 730 gün)
+            # Yahoo Finance'den GMSTR verisi
             ticker = yf.Ticker("GMSTR.IS")
-            data = ticker.history(period=period, interval="1h")
+            data = ticker.history(period=period, interval=interval)
             
             if data is None:
                 logger.error("GMSTR verisi None döndü")
@@ -325,6 +336,7 @@ class GMSTRPredictionSystem:
             
             self._gmstr_cache = data
             self._gmstr_cache_time = now
+            self._gmstr_cache_interval = interval
             logger.info(f"GMSTR verisi çekildi: {len(data)} satir")
             return data
         except Exception as e:
@@ -1364,7 +1376,90 @@ class GMSTRPredictionSystem:
             logger.error(traceback.format_exc())
             return None
     
-    def save_prediction(self, current_price, direction, target_price, confidence, timeframe, predicted_for_time=None):
+    def make_backfill_prediction(self, as_of, timeframe='4h', gmstr_data=None, market_data=None):
+        """Gecmise donuk tahmin: modeli egitilmis haliyle, veriyi as_of tarihine kadar kirparak calistirir.
+        Not: Bu fonksiyon sadece temel ML tahminini kullanir; canli market verisi, haber ve consensus filtreleri atlanir.
+        Opsiyonel gmstr_data ve market_data parametreleri ile backfill hizlanir.
+        """
+        try:
+            if self.model is None:
+                try:
+                    self.model = joblib.load(self.model_path)
+                    with open('feature_names.txt', 'r') as f:
+                        self.features = f.read().split(',')
+                except:
+                    logger.error("Backfill icin model bulunamadi, once egitim yapin")
+                    return None
+            
+            # 2y veriyi cek veya disaridan al, as_of'a kadar kirp
+            if gmstr_data is None:
+                gmstr_data = self.fetch_gmstr_data(period="2y")
+            else:
+                gmstr_data = gmstr_data.copy()
+            if gmstr_data is None or gmstr_data.empty:
+                return None
+            if gmstr_data.index.tz is not None:
+                gmstr_data.index = gmstr_data.index.tz_localize(None)
+            gmstr_data = gmstr_data[gmstr_data.index < as_of]
+            
+            # Piyasa verisini cek veya disaridan al, as_of'a kadar kirp
+            if market_data is None:
+                market_data = self.fetch_market_data(period="2y")
+            else:
+                market_data = {k: v.copy() for k, v in market_data.items() if v is not None}
+            if market_data:
+                for key, df in market_data.items():
+                    if df is not None and not df.empty:
+                        if df.index.tz is not None:
+                            df.index = df.index.tz_localize(None)
+                        market_data[key] = df[df.index < as_of]
+            if len(gmstr_data) < 50:
+                logger.warning(f"Backfill icin yetersiz veri: {len(gmstr_data)} satir @ {as_of}")
+                return None
+            
+            X = self.create_features(gmstr_data, market_data)
+            if X is None or len(X) == 0:
+                return None
+            
+            latest_features = X[-1].reshape(1, -1)
+            current_price = float(gmstr_data['Close'].iloc[-1])
+            
+            # PCA ve Scaler uygula (varsa)
+            if isinstance(self.model, dict):
+                if self.model.get('scaler'):
+                    latest_features = self.model['scaler'].transform(latest_features)
+                if self.model.get('pca'):
+                    latest_features = self.model['pca'].transform(latest_features)
+                if 'lgb' in self.model:
+                    proba = self.model['lgb'].predict_proba(latest_features)[0][1]
+                else:
+                    proba = self.model.predict_proba(latest_features)[0][1]
+            else:
+                proba = self.model.predict_proba(latest_features)[0][1]
+            
+            ml_prediction = 1 if proba > 0.5 else 0
+            confidence = abs(proba - 0.5) * 2
+            
+            if ml_prediction == 1:
+                direction = 'YUKSELIS'
+                target_price = current_price * 1.015
+            else:
+                direction = 'DUSUS'
+                target_price = current_price * 0.985
+            
+            return {
+                'timestamp': as_of,
+                'current_price': current_price,
+                'direction': direction,
+                'target_price': target_price,
+                'confidence': confidence,
+                'timeframe': timeframe
+            }
+        except Exception as e:
+            logger.error(f"Backfill tahmin hatasi @ {as_of}: {e}")
+            return None
+    
+    def save_prediction(self, current_price, direction, target_price, confidence, timeframe, predicted_for_time=None, model_type='normal'):
         """Tahmini veritabanına kaydet ve ID döndür - Sadece borsa acikken"""
         try:
             now = datetime.now()
@@ -1380,17 +1475,17 @@ class GMSTRPredictionSystem:
             if self.is_postgres:
                 cursor.execute('''
                     INSERT INTO predictions (timestamp, predicted_for_time, current_price, predicted_direction, 
-                    predicted_price, confidence, timeframe)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    predicted_price, confidence, timeframe, model_type)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
-                ''', (now, predicted_for_time, current_price, direction, target_price, confidence, timeframe))
+                ''', (now, predicted_for_time, current_price, direction, target_price, confidence, timeframe, model_type))
                 pred_id = cursor.fetchone()[0]
             else:
                 cursor.execute('''
                     INSERT INTO predictions (timestamp, predicted_for_time, current_price, predicted_direction, 
-                    predicted_price, confidence, timeframe)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (now, predicted_for_time, current_price, direction, target_price, confidence, timeframe))
+                    predicted_price, confidence, timeframe, model_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (now, predicted_for_time, current_price, direction, target_price, confidence, timeframe, model_type))
                 pred_id = cursor.lastrowid
             
             conn.commit()
@@ -1400,6 +1495,35 @@ class GMSTRPredictionSystem:
             
         except Exception as e:
             logger.error(f"Tahmin kaydetme hatası: {e}")
+            return None
+    
+    def save_historical_prediction(self, timestamp, current_price, direction, target_price, confidence, timeframe, model_type='normal'):
+        """Gecmise donuk tahmini veritabanina kaydet (borsa kontrolu yapmadan)"""
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            
+            if self.is_postgres:
+                cursor.execute('''
+                    INSERT INTO predictions (timestamp, predicted_for_time, current_price, predicted_direction, 
+                    predicted_price, confidence, timeframe, model_type)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                ''', (timestamp, None, current_price, direction, target_price, confidence, timeframe, model_type))
+                pred_id = cursor.fetchone()[0]
+            else:
+                cursor.execute('''
+                    INSERT INTO predictions (timestamp, predicted_for_time, current_price, predicted_direction, 
+                    predicted_price, confidence, timeframe, model_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (timestamp, None, current_price, direction, target_price, confidence, timeframe, model_type))
+                pred_id = cursor.lastrowid
+            
+            conn.commit()
+            conn.close()
+            return pred_id
+        except Exception as e:
+            logger.error(f"Gecmis tahmin kaydetme hatasi: {e}")
             return None
     
     def update_telegram_status(self, pred_id, status):
@@ -2248,7 +2372,12 @@ def dashboard():
 
 @app.route('/api/predictions')
 def get_predictions():
-    """Tahminleri getir (her cagrildiginda once dogrulama yap)"""
+    """Tahminleri getir (her cagrildiginda once dogrulama yap).
+    Query params:
+      days: son kac gunluk veri (ornegin 1, 7, 30). Yoksa son 50 kayit.
+      model_type: 'normal', 'swing' veya 'all'. Varsayilan 'all'.
+      min_confidence: minimum guven esigi (ornegin 0.60). Varsayilan 0.
+    """
     try:
         # Once gecmis tahminlerin dogrulugunu kontrol et
         try:
@@ -2256,17 +2385,44 @@ def get_predictions():
         except Exception as e:
             logger.warning(f"Predictions dogrulama hatasi: {e}")
 
+        days = request.args.get('days', type=int)
+        model_type = request.args.get('model_type', 'all', type=str).lower()
+        min_confidence = request.args.get('min_confidence', 0, type=float)
+        
         conn = prediction_system.get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
+        params = []
+        where_clauses = []
+        
+        if days is not None and days > 0:
+            if prediction_system.is_postgres:
+                where_clauses.append("timestamp >= NOW() - INTERVAL '%s days'" % days)
+            else:
+                where_clauses.append("timestamp >= datetime('now', '-%d days')" % days)
+        
+        if model_type in ('normal', 'swing'):
+            where_clauses.append("model_type = ?")
+            params.append(model_type)
+        
+        if min_confidence > 0:
+            where_clauses.append("confidence >= ?")
+            params.append(min_confidence)
+        
+        sql = '''
             SELECT timestamp, predicted_for_time, current_price, predicted_direction, 
                    predicted_price, confidence, timeframe, actual_price, is_correct,
-                   telegram_sent
+                   telegram_sent, model_type
             FROM predictions
-            ORDER BY timestamp DESC
-            LIMIT 50
-        ''')
+        '''
+        if where_clauses:
+            sql += ' WHERE ' + ' AND '.join(where_clauses)
+        sql += ' ORDER BY timestamp DESC'
+        
+        if days is None:
+            sql += ' LIMIT 50'
+        
+        cursor.execute(sql, params)
         
         predictions = []
         for row in cursor.fetchall():
@@ -2280,13 +2436,181 @@ def get_predictions():
                 'timeframe': row[6],
                 'actual_price': row[7],
                 'is_correct': row[8],
-                'telegram_sent': row[9] if row[9] is not None else 0
+                'telegram_sent': row[9] if row[9] is not None else 0,
+                'model_type': row[10] if row[10] is not None else 'normal'
             })
         
         conn.close()
         return jsonify(predictions)
         
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/prediction-accuracy')
+def get_prediction_accuracy():
+    """Tahmin dogruluk orani (yuksek guvenli tahminler icin).
+    Query params:
+      days: son kac gunluk veri (default 7)
+      model_type: 'normal', 'swing' veya 'all' (default 'all')
+      min_confidence: minimum guven esigi (default 0.70)
+    Dogruluk = yon dogrulugu: tahmin yonu ile tahmin suresi sonundaki fiyat hareketi ayni mi?
+    """
+    try:
+        days = int(request.args.get('days', 7))
+        model_type = request.args.get('model_type', 'all').lower()
+        min_confidence = float(request.args.get('min_confidence', 0.70))
+        if days < 1 or days > 365:
+            return jsonify({'error': 'days 1-365 arasi olmali'}), 400
+        if model_type not in ('normal', 'swing', 'all'):
+            return jsonify({'error': 'model_type normal, swing veya all olmali'}), 400
+        if min_confidence < 0 or min_confidence > 1:
+            return jsonify({'error': 'min_confidence 0-1 arasi olmali'}), 400
+        
+        now = datetime.now()
+        start = now - timedelta(days=days)
+        
+        conn = prediction_system.get_db_connection()
+        cursor = conn.cursor()
+        ph = '%s' if prediction_system.is_postgres else '?'
+        
+        where_clauses = [f"timestamp >= {ph}", f"confidence >= {ph}"]
+        params = [start, min_confidence]
+        
+        if model_type in ('normal', 'swing'):
+            where_clauses.append(f"model_type = {ph}")
+            params.append(model_type)
+        else:
+            # 'all' icin model_type NULL olan eski kayitlari normal say
+            where_clauses.append(f"(model_type = {ph} OR model_type IS NULL)")
+            params.append('normal')
+        
+        sql = f'''
+            SELECT timestamp, predicted_for_time, current_price, predicted_price, predicted_direction, confidence, timeframe
+            FROM predictions
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY timestamp ASC
+        '''
+        cursor.execute(sql, params)
+        preds = cursor.fetchall()
+        conn.close()
+        
+        if not preds:
+            return jsonify({'accuracy': None, 'correct': 0, 'total': 0})
+        
+        # GMSTR verisini cek (2y yeterli)
+        gmstr_data = prediction_system.fetch_gmstr_data(period="2y")
+        if gmstr_data is None or gmstr_data.empty:
+            return jsonify({'accuracy': None, 'correct': 0, 'total': 0, 'error': 'Fiyat verisi alinamadi'})
+        
+        gmstr_data = gmstr_data.copy()
+        if gmstr_data.index.tz is not None:
+            gmstr_data.index = gmstr_data.index.tz_localize(None)
+        
+        correct = 0
+        total = 0
+        for pred in preds:
+            ts, pred_for, current_price, target_price, direction, confidence, tf = pred
+            
+            # Tarih string ise parse et
+            if isinstance(ts, str):
+                ts = date_parser.parse(ts)
+            if pred_for is not None and isinstance(pred_for, str):
+                pred_for = date_parser.parse(pred_for)
+            
+            # Tahminin son kullanma zamanini belirle
+            if pred_for is None:
+                if tf == '1h':
+                    pred_for = ts + timedelta(hours=1)
+                elif tf == '4h':
+                    pred_for = ts + timedelta(hours=4)
+                elif tf == '1d':
+                    pred_for = ts + timedelta(days=1)
+                else:
+                    pred_for = ts + timedelta(hours=1)
+            
+            # Tahmin zamani veriden sonraki fiyat bulunamazsa atla
+            if pred_for < gmstr_data.index[0]:
+                continue
+            
+            mask = gmstr_data.index <= pred_for
+            if not mask.any():
+                continue
+            actual_price = float(gmstr_data.loc[mask, 'Close'].iloc[-1])
+            
+            total += 1
+            current_price = float(current_price)
+            target_price = float(target_price)
+            
+            # Yon dogrulugu: tahmin yonu ile gerceklesen fiyat hareketi ayni mi?
+            if direction == 'YUKSELIS':
+                if actual_price > current_price:
+                    correct += 1
+            elif direction == 'DUSUS':
+                if actual_price < current_price:
+                    correct += 1
+        
+        accuracy = correct / total if total > 0 else None
+        return jsonify({
+            'accuracy': accuracy,
+            'correct': correct,
+            'total': total,
+            'days': days,
+            'model_type': model_type,
+            'min_confidence': min_confidence
+        })
+        
+    except Exception as e:
+        logger.error(f"Prediction accuracy hatasi: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/market-prices')
+def get_market_prices():
+    """GMSTR piyasa fiyatlarini dondur (grafi icin).
+    Query params:
+      days: son kac gunluk veri (1, 7, 30). Varsayilan 7.
+    """
+    try:
+        days = int(request.args.get('days', 7))
+        if days < 1 or days > 365:
+            return jsonify({'error': 'days 1-365 arasi olmali'}), 400
+        
+        if days == 1:
+            period = "1mo"
+            interval = "30m"
+        elif days == 7:
+            period = "1mo"
+            interval = "30m"
+        else:
+            period = "1mo"
+            interval = "30m"
+        
+        gmstr_data = prediction_system.fetch_gmstr_data(period=period, interval=interval)
+        if gmstr_data is None or gmstr_data.empty:
+            return jsonify({'error': 'Fiyat verisi alinamadi'}), 500
+        
+        gmstr_data = gmstr_data.copy()
+        if gmstr_data.index.tz is not None:
+            gmstr_data.index = gmstr_data.index.tz_localize(None)
+        
+        now = datetime.now()
+        start = now - timedelta(days=days)
+        gmstr_data = gmstr_data[gmstr_data.index >= start]
+        
+        prices = []
+        for ts, row in gmstr_data.iterrows():
+            prices.append({
+                'timestamp': ts.strftime('%Y-%m-%d %H:%M:%S'),
+                'close': float(row['Close'])
+            })
+        
+        return jsonify({'prices': prices, 'days': days, 'interval': interval})
+        
+    except Exception as e:
+        logger.error(f"Market prices hatasi: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/performance')
@@ -2381,6 +2705,17 @@ def swing_predict():
         
         result = swing_predictor.predict()
         if result:
+            # Mevcut fiyat 30dk veriden gercek son fiyat olarak al
+            gmstr_30m = prediction_system.fetch_gmstr_data(period="1d", interval="30m")
+            if gmstr_30m is not None and not gmstr_30m.empty:
+                if gmstr_30m.index.tz is not None:
+                    gmstr_30m.index = gmstr_30m.index.tz_localize(None)
+                real_price = float(gmstr_30m['Close'].iloc[-1])
+            else:
+                real_price = result['current_price']
+            result['current_price'] = real_price
+            result['real_price'] = real_price
+            
             # Manuel fiyat varsa uygula (model tahmini degismez, sadece gosterim)
             if manual_price and isinstance(manual_price, (int, float)) and manual_price > 0:
                 result['display_price'] = float(manual_price)
@@ -2406,10 +2741,11 @@ def swing_predict():
                 prediction_system.save_prediction(
                     result['current_price'],
                     result['direction'],
-                    result['current_price'] * (1.02 if result['direction'] == 'YUKSELIS' else 0.98),
+                    result['current_price'] * (1.01 if result['direction'] == 'YUKSELIS' else 0.99),
                     result['confidence'],
                     '1h',
-                    None
+                    None,
+                    'swing'
                 )
             except Exception as e:
                 logger.warning(f"Swing kaydetme hatasi: {e}")
@@ -2571,6 +2907,106 @@ def get_premarket():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/api/backfill-predictions', methods=['POST'])
+def backfill_predictions():
+    """Son N gun icin gecmise donuk tahmin uret ve kaydet (asenkron).
+    Body: days (default 30)
+    """
+    try:
+        data = request.get_json() or {}
+        days = int(data.get('days', 30))
+        if days < 1 or days > 90:
+            return jsonify({'error': 'days 1-90 arasi olmali'}), 400
+        
+        import threading
+        
+        def run_backfill():
+            try:
+                now = datetime.now()
+                total = 0
+                # 30dk veriyi bir kere cek
+                gmstr_30m = prediction_system.fetch_gmstr_data(period="60d", interval="30m")
+                if gmstr_30m is not None:
+                    if gmstr_30m.index.tz is not None:
+                        gmstr_30m.index = gmstr_30m.index.tz_localize(None)
+                for day_offset in range(days, 0, -1):
+                    as_of_day = now - timedelta(days=day_offset)
+                    # Hafta sonu atla
+                    if as_of_day.weekday() >= 5:
+                        continue
+                    # 09:30 - 17:00 arasi 30dk araliklar
+                    for hour in range(9, 18):
+                        for minute in (0, 30):
+                            if hour == 9 and minute < 30:
+                                continue
+                            if hour == 17 and minute > 0:
+                                continue
+                            as_of = as_of_day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                            if as_of >= now:
+                                continue
+                            
+                            # Ayni zamanda zaten kayit varsa atla
+                            try:
+                                conn = prediction_system.get_db_connection()
+                                cursor = conn.cursor()
+                                ph = '%s' if prediction_system.is_postgres else '?'
+                                cursor.execute(
+                                    f"SELECT COUNT(*) FROM predictions WHERE timestamp = {ph} AND model_type = {ph}",
+                                    (as_of, 'normal')
+                                )
+                                if cursor.fetchone()[0] > 0:
+                                    conn.close()
+                                    continue
+                                conn.close()
+                            except Exception as dup_err:
+                                logger.debug(f"Duplicate kontrol hatasi: {dup_err}")
+                            
+                            # Normal tahmin
+                            normal_pred = prediction_system.make_backfill_prediction(as_of, '4h')
+                            if normal_pred:
+                                prediction_system.save_historical_prediction(
+                                    as_of, normal_pred['current_price'], normal_pred['direction'],
+                                    normal_pred['target_price'], normal_pred['confidence'], '4h', 'normal'
+                                )
+                                total += 1
+                            
+                            # Swing tahmin
+                            if swing_predictor is not None:
+                                swing_pred = swing_predictor.predict_historical(as_of)
+                                if swing_pred:
+                                    # Mevcut fiyat 30dk veriden, as_of'dan onceki son kapanis olarak al
+                                    if gmstr_30m is not None:
+                                        current_price = gmstr_30m[gmstr_30m.index < as_of].Close.iloc[-1]
+                                    else:
+                                        current_price = swing_pred['current_price']
+                                    prediction_system.save_historical_prediction(
+                                        as_of, float(current_price), swing_pred['direction'],
+                                        float(current_price) * (1.01 if swing_pred['direction'] == 'YUKSELIS' else 0.99),
+                                        swing_pred['confidence'], '1h', 'swing'
+                                    )
+                                    total += 1
+                
+                logger.info(f"Backfill tamamlandi: {total} tahmin kaydedildi")
+            except Exception as e:
+                logger.error(f"Backfill thread hatasi: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        thread = threading.Thread(target=run_backfill)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Backfill baslatildi: son {days} gun icin her 30dk normal + swing tahmin.',
+            'note': 'Islem arka planda calisiyor, loglari takip edin.'
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 def scheduled_predictions():
     """Otomatik tahminler - 9:30-17:00 her 30dk"""
     logger.info("Otomatik tahminler baslatiliyor...")
@@ -2617,7 +3053,8 @@ def scheduled_predictions():
                     result['current_price'] * (1.02 if result['direction'] == 'YUKSELIS' else 0.98),
                     result['confidence'],
                     '1h',
-                    None
+                    None,
+                    'swing'
                 )
                 
                 # Telegram sadece %60+

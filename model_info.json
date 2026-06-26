@@ -1,7 +1,7 @@
 {
-  "last_trained": "2026-06-25 16:55:46",
-  "lgbm_accuracy": 0.6961,
-  "filtered_accuracy": 0.8871,
+  "last_trained": "2026-06-26 11:49:08",
+  "lgbm_accuracy": 0.6873,
+  "filtered_accuracy": 0.8421,
   "test_samples": 566,
   "train_samples": 2849,
   "status": "saved",

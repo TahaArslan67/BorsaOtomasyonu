@@ -15,7 +15,7 @@ import lightgbm as lgb
 import logging
 import joblib
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from scipy.signal import argrelextrema
 
 logger = logging.getLogger(__name__)
@@ -29,12 +29,74 @@ class GMSTRSwingPredictor:
         self.last_train_time = None
         self.model_path = 'swing_model_v3.pkl'
         
-    def fetch_data(self, period="2y", interval="1h"):
+    def fetch_data(self, period="2y", interval="1h", end=None):
         ticker = yf.Ticker("GMSTR.IS")
-        data = ticker.history(period=period, interval=interval)
+        if end is not None:
+            data = ticker.history(period=period, interval=interval, end=end)
+        else:
+            data = ticker.history(period=period, interval=interval)
         if data.empty or len(data) < 200:
             return None
         return data
+    
+    def predict_historical(self, as_of):
+        """Belirli bir gecmis tarih icin swing tahmini (son veri degil, as_of anindaki veri)"""
+        if self.model is None:
+            if not self.load_model():
+                logger.error("Swing modeli bulunamadi, once egitin")
+                return None
+        
+        # as_of tarihine kadar veri cek (ufak bir pay bırakarak yfinance end parametresi inclusive degil)
+        try:
+            end_str = (as_of + timedelta(days=1)).strftime('%Y-%m-%d')
+            data = self.fetch_data("60d", "1h", end=end_str)
+            if data is None:
+                return None
+            data = data.copy()
+            if data.index.tz is not None:
+                data.index = data.index.tz_localize(None)
+            data = data[data.index < as_of]
+            if len(data) < 50:
+                logger.warning(f"Swing backfill icin yetersiz veri: {len(data)} @ {as_of}")
+                return None
+            
+            features = self.create_features(data)
+            latest = features.iloc[-1:].values
+            latest_s = self.scaler.transform(latest)
+            latest_p = self.pca.transform(latest_s)
+            
+            proba = self.model.predict_proba(latest_p)[0][1]
+            pred = 1 if proba > 0.5 else 0
+            confidence = abs(proba - 0.5) * 2
+            current_price = float(data['Close'].iloc[-1])
+            rsi_val = features['rsi'].iloc[-1]
+            is_near_support = features['near_support'].iloc[-1] == 1
+            is_near_resistance = features['near_resistance'].iloc[-1] == 1
+            
+            context = ""
+            if is_near_support and pred == 1:
+                context = "Destek tepkisi"
+            elif is_near_resistance and pred == 0:
+                context = "Direnc donusu"
+            elif rsi_val < 30 and pred == 1:
+                context = "Asiri satim donusu"
+            elif rsi_val > 70 and pred == 0:
+                context = "Asiri alim donusu"
+            else:
+                context = "Genel momentum"
+            
+            return {
+                'direction': 'YUKSELIS' if pred == 1 else 'DUSUS',
+                'confidence': float(confidence),
+                'raw_proba': float(proba),
+                'current_price': current_price,
+                'timestamp': as_of.strftime('%Y-%m-%d %H:%M'),
+                'context': context,
+                'rsi': float(rsi_val)
+            }
+        except Exception as e:
+            logger.error(f"Swing gecmis tahmin hatasi @ {as_of}: {e}")
+            return None
     
     def find_pivots(self, highs, lows, order=5):
         """Pivot high/low noktalarını bul"""
@@ -193,11 +255,12 @@ class GMSTRSwingPredictor:
         # Direnç/destek noktalarını bul
         pivot_highs, pivot_lows = self.find_pivots(pd.Series(h), pd.Series(l), order=5)
         
-        # Her nokta için ileriye bak
-        for i in range(20, len(df) - 12):
+        # Her nokta için 1 saat sonraya bak
+        for i in range(20, len(df) - 1):
             current = c[i]
-            future_high = np.max(h[i+1:i+13])  # 12 saat sonraki en yüksek
-            future_low = np.min(l[i+1:i+13])   # 12 saat sonraki en düşük
+            future_high = h[i+1]  # 1h sonraki yüksek
+            future_low = l[i+1]   # 1h sonraki düşük
+            future_close = c[i+1] # 1h sonraki kapanış
             
             # Son pivotlara olan mesafe
             ph_before = [ph for ph in pivot_highs if ph < i and i - ph <= 50]
@@ -209,16 +272,27 @@ class GMSTRSwingPredictor:
             resistance_dist = (h[last_ph] - current) / current if last_ph else 999
             support_dist = (current - l[last_pl]) / current if last_pl else 999
             
+            # 1h sonrasi yonu belirle
+            up_move = future_high - current
+            down_move = current - future_low
+            close_move = future_close - current
+            
             # Sadece önemli seviyelerde tahmin yap
             if resistance_dist < 0.015:  # Direnç yakınında
-                if future_low < current * 0.985:  # %1.5 düştü
+                if down_move > 0.003 * current:  # %0.3 düştü
                     labels[i] = 0  # Düşüş
-                elif future_high > current * 1.01:  # Kırılım
+                elif up_move > 0.005 * current:  # Kırılım
                     labels[i] = 1
             elif support_dist < 0.015:  # Destek yakınında
-                if future_high > current * 1.015:  # %1.5 yükseldi
+                if up_move > 0.003 * current:  # %0.3 yükseldi
                     labels[i] = 1  # Yükseliş
-                elif future_low < current * 0.99:  # Kırılım
+                elif down_move > 0.005 * current:  # Kırılım
+                    labels[i] = 0
+            else:
+                # Genel 1h momentum (daha zayif sinyal)
+                if close_move > 0.004 * current:
+                    labels[i] = 1
+                elif close_move < -0.004 * current:
                     labels[i] = 0
         
         return labels.astype(int)
