@@ -326,9 +326,12 @@ class GMSTRPredictionSystem:
                 self._gmstr_cache = None
         
         try:
-            # Yahoo Finance'den GMSTR verisi - Render icin timeout'lu session
+            # Yahoo Finance'den GMSTR verisi - Render icin timeout'lu session + User-Agent
             session = requests.Session()
             session.timeout = 30
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            })
             ticker = yf.Ticker("GMSTR.IS", session=session)
             data = ticker.history(period=period, interval=interval)
             
@@ -386,9 +389,12 @@ class GMSTRPredictionSystem:
             return self._market_cache
         
         try:
-            # Render icin timeout'lu session
+            # Render icin timeout'lu session + User-Agent
             session = requests.Session()
             session.timeout = 30
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            })
 
             # BIST 100
             bist100 = yf.Ticker("XU100.IS", session=session).history(period=period, interval="1h")
