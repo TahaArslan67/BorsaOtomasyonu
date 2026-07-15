@@ -2467,18 +2467,21 @@ def get_predictions():
         params = []
         where_clauses = []
         
+        # PostgreSQL %s, SQLite ? kullanir
+        ph = '%s' if prediction_system.is_postgres else '?'
+        
         if days is not None and days > 0:
             if prediction_system.is_postgres:
-                where_clauses.append("timestamp >= NOW() - INTERVAL '%s days'" % days)
+                where_clauses.append(f"timestamp >= NOW() - INTERVAL '{int(days)} days'")
             else:
-                where_clauses.append("timestamp >= datetime('now', '-%d days')" % days)
+                where_clauses.append(f"timestamp >= datetime('now', '-{int(days)} days')")
         
         if model_type in ('normal', 'swing'):
-            where_clauses.append("model_type = ?")
+            where_clauses.append(f"model_type = {ph}")
             params.append(model_type)
         
         if min_confidence > 0:
-            where_clauses.append("confidence >= ?")
+            where_clauses.append(f"confidence >= {ph}")
             params.append(min_confidence)
         
         sql = '''
@@ -2667,11 +2670,11 @@ def get_market_prices():
                 conn = prediction_system.get_db_connection()
                 cursor = conn.cursor()
                 if prediction_system.is_postgres:
-                    cursor.execute('''
+                    cursor.execute(f'''
                         SELECT timestamp, current_price FROM predictions
-                        WHERE timestamp >= NOW() - INTERVAL '%s days'
+                        WHERE timestamp >= NOW() - INTERVAL '{int(days)} days'
                         ORDER BY timestamp ASC
-                    ''' % days)
+                    ''')
                 else:
                     cursor.execute('''
                         SELECT timestamp, current_price FROM predictions
