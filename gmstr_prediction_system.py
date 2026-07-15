@@ -293,8 +293,10 @@ class GMSTRPredictionSystem:
                 self._gmstr_cache = None
         
         try:
-            # Yahoo Finance'den GMSTR verisi
-            ticker = yf.Ticker("GMSTR.IS")
+            # Yahoo Finance'den GMSTR verisi - Render icin timeout'lu session
+            session = requests.Session()
+            session.timeout = 30
+            ticker = yf.Ticker("GMSTR.IS", session=session)
             data = ticker.history(period=period, interval=interval)
             
             if data is None:
@@ -351,11 +353,15 @@ class GMSTRPredictionSystem:
             return self._market_cache
         
         try:
+            # Render icin timeout'lu session
+            session = requests.Session()
+            session.timeout = 30
+
             # BIST 100
-            bist100 = yf.Ticker("XU100.IS").history(period=period, interval="1h")
+            bist100 = yf.Ticker("XU100.IS", session=session).history(period=period, interval="1h")
             
             # USD/TRY
-            usd_try = yf.Ticker("USDTRY=X").history(period=period, interval="1h")
+            usd_try = yf.Ticker("USDTRY=X", session=session).history(period=period, interval="1h")
             
             # Altın fiyatı
             gold = None
@@ -902,7 +908,34 @@ class GMSTRPredictionSystem:
             import traceback
             logger.error(traceback.format_exc())
             return False
-    
+
+    def load_model(self):
+        """Kayitli modeli yukle"""
+        try:
+            if os.path.exists(self.model_path):
+                self.model = joblib.load(self.model_path)
+                logger.info(f"Model yuklendi: {self.model_path}")
+
+                # Feature names yukle
+                if os.path.exists('feature_names.txt'):
+                    with open('feature_names.txt', 'r') as f:
+                        self.features = f.read().strip().split(',')
+                    logger.info(f"Feature names yuklendi: {len(self.features)} ozellik")
+
+                # Model info yukle
+                if os.path.exists('model_info.json'):
+                    with open('model_info.json', 'r') as f:
+                        info = json.load(f)
+                    logger.info(f"Model info: accuracy={info.get('lgbm_accuracy', 'N/A')}, trained={info.get('last_trained', 'N/A')}")
+
+                return True
+            else:
+                logger.warning(f"Model dosyasi bulunamadi: {self.model_path}")
+                return False
+        except Exception as e:
+            logger.error(f"Model yukleme hatasi: {e}")
+            return False
+
     def is_borsa_open(self):
         """Borsa açık mı kontrol et (Türkiye saati)"""
         now = datetime.now()
@@ -1044,11 +1077,7 @@ class GMSTRPredictionSystem:
         """Gelismis tahmin: ensemble + coklu zaman dilimi + ADX rejim + dinamik guven."""
         try:
             if self.model is None:
-                try:
-                    self.model = joblib.load(self.model_path)
-                    with open('feature_names.txt', 'r') as f:
-                        self.features = f.read().split(',')
-                except:
+                if not self.load_model():
                     logger.error("Model bulunamadi, once egitim yapin")
                     return None
 
@@ -2362,6 +2391,16 @@ except ImportError:
 prediction_system = GMSTRPredictionSystem()
 swing_predictor = GMSTRSwingPredictor() if SWING_AVAILABLE else None
 
+@app.route('/health')
+def health_check():
+    """Hafif health-check endpoint - Render uyku icin ping hedefi"""
+    return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()}), 200
+
+@app.route('/ping')
+def ping():
+    """Alternatif hafif ping endpoint"""
+    return 'pong', 200
+
 @app.route('/')
 def dashboard():
     """Dashboard ana sayfa - cache bypass, direkt dosya oku"""
@@ -2683,15 +2722,39 @@ def make_prediction():
     else:
         return jsonify({'error': 'Tahmin yapılamadı'}), 500
 
+# Egitim durumu takibi
+_training_status = {'running': False, 'result': None, 'error': None, 'started_at': None, 'finished_at': None}
+
 @app.route('/api/train', methods=['POST'])
 def train_model():
-    """Modeli eğit"""
-    success = prediction_system.train_model()
-    
-    if success:
-        return jsonify({'success': True, 'message': 'Model başarıyla eğitildi'})
-    else:
-        return jsonify({'error': 'Model eğitilemedi'}), 500
+    """Modeli eğit (arka planda - Render timeout onlemi)"""
+    if _training_status['running']:
+        return jsonify({'status': 'already_running', 'message': 'Egitim zaten devam ediyor'}), 409
+
+    def run_training():
+        _training_status['running'] = True
+        _training_status['result'] = None
+        _training_status['error'] = None
+        _training_status['started_at'] = datetime.now().isoformat()
+        _training_status['finished_at'] = None
+        try:
+            success = prediction_system.train_model()
+            _training_status['result'] = 'success' if success else 'failed'
+        except Exception as e:
+            _training_status['error'] = str(e)
+            _training_status['result'] = 'error'
+            logger.error(f"Egitim hatasi: {e}")
+        finally:
+            _training_status['running'] = False
+            _training_status['finished_at'] = datetime.now().isoformat()
+
+    threading.Thread(target=run_training, daemon=True).start()
+    return jsonify({'status': 'started', 'message': 'Egitim arka planda basladi'}), 202
+
+@app.route('/api/train/status')
+def train_status():
+    """Egitim durumunu kontrol et"""
+    return jsonify(_training_status)
 
 @app.route('/api/swing/predict', methods=['POST'])
 def swing_predict():
@@ -3122,19 +3185,60 @@ def scheduled_predictions():
         schedule.run_pending()
         time_module.sleep(60)
 
-if __name__ == '__main__':
-    # İlk başlatma
-    logger.info("GMSTR Tahmin Sistemi Başlatılıyor...")
-    
-    # Model eğitimi (yoksa)
-    prediction_system.train_model()
-    
-    # Scheduled thread başlat
-    import threading
+# Gunicorn ile calistiginda __main__ calismaz, bu yuzden
+# scheduler ve keep-alive'i modul seviyesinde baslat
+import threading
+import atexit
+
+_keep_alive_url = os.environ.get('RENDER_EXTERNAL_URL', '')
+
+def keep_alive():
+    """Her 5 dakikada kendi URL'ine ping gondererek Render uykusunu engelle"""
+    while True:
+        try:
+            if _keep_alive_url:
+                ping_url = _keep_alive_url.rstrip('/') + '/health'
+                resp = requests.get(ping_url, timeout=15)
+                logger.info(f"Keep-alive ping: {resp.status_code}")
+            else:
+                logger.debug("Keep-alive: RENDER_EXTERNAL_URL tanimli degil, atlandi")
+        except Exception as e:
+            logger.warning(f"Keep-alive hatasi: {e}")
+        time_module.sleep(280)  # 4.6 dakika - Render'in 15dk uyku suresinden once
+
+def start_background_workers():
+    """Scheduler ve keep-alive thread'lerini baslat (gunicorn uyumlu)"""
+    logger.info("Background workers baslatiliyor...")
+
+    # Model egitimi (yoksa) - arka planda
+    def init_model():
+        try:
+            if not os.path.exists(prediction_system.model_path):
+                logger.info("Model bulunamadi, egitim basliyor...")
+                prediction_system.train_model()
+            else:
+                prediction_system.load_model()
+                logger.info("Mevcut model yuklendi")
+        except Exception as e:
+            logger.error(f"Model baslatma hatasi: {e}")
+
+    threading.Thread(target=init_model, daemon=True).start()
+
+    # Scheduler thread
     scheduler_thread = threading.Thread(target=scheduled_predictions, daemon=True)
     scheduler_thread.start()
-    
-    # Flask server - Production'da debug=False
+
+    # Keep-alive thread (Render uyku engelleme)
+    if _keep_alive_url:
+        ka_thread = threading.Thread(target=keep_alive, daemon=True)
+        ka_thread.start()
+        logger.info(f"Keep-alive baslatildi: {_keep_alive_url}/health")
+
+start_background_workers()
+
+if __name__ == '__main__':
+    # Local development - Flask dev server
+    logger.info("GMSTR Tahmin Sistemi Baslatiliyor (local dev)...")
     port = int(os.environ.get('PORT', 5000))
     debug_mode = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
     app.run(host='0.0.0.0', port=port, debug=debug_mode)

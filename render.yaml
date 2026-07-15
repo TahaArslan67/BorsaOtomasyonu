@@ -3,7 +3,7 @@ services:
     name: gmstr-prediction-system
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn gmstr_prediction_system:app
+    startCommand: gunicorn gmstr_prediction_system:app --timeout 120 --workers 1 --threads 2
     envVars:
       - key: PYTHON_VERSION
         value: 3.11
@@ -13,5 +13,7 @@ services:
         sync: false
       - key: FLASK_DEBUG
         value: false
+      - key: RENDER_EXTERNAL_URL
+        value: https://borsaotomasyonu.onrender.com
     plan: free
     autoDeploy: true
