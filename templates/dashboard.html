@@ -1057,7 +1057,7 @@
         async function loadPredictions(days = currentChartDays) {
             currentChartDays = days;
             try {
-                const predPromise = fetch('/api/predictions?days=' + days + '&model_type=all&min_confidence=0.60');
+                const predPromise = fetch('/api/predictions?days=' + days + '&model_type=all');
                 const pricePromise = fetch('/api/market-prices?days=' + days);
                 const normalAccPromise = fetch('/api/prediction-accuracy?days=' + days + '&model_type=normal&min_confidence=0.60');
                 const swingAccPromise = fetch('/api/prediction-accuracy?days=' + days + '&model_type=swing&min_confidence=0.60');
@@ -1067,10 +1067,17 @@
                 ]);
                 
                 predictions = await predResponse.json();
+                if (!Array.isArray(predictions)) {
+                    console.error('Tahmin API hatasi:', predictions);
+                    predictions = [];
+                }
                 const priceData = await priceResponse.json();
                 marketPrices = priceData.prices || [];
-                const normalAcc = await normalAccResponse.json();
-                const swingAcc = await swingAccResponse.json();
+                let normalAcc = await normalAccResponse.json();
+                let swingAcc = await swingAccResponse.json();
+                
+                if (normalAcc.error) normalAcc = {accuracy: null, correct: 0, total: 0};
+                if (swingAcc.error) swingAcc = {accuracy: null, correct: 0, total: 0};
                 
                 renderAccuracy(normalAcc, swingAcc, days);
                 renderPredictions();
@@ -1209,7 +1216,7 @@
             }
             
             if (marketPrices.length === 0) {
-                container.innerHTML = '<div class="loading">Fiyat verisi yok</div>';
+                container.innerHTML = '<div class="loading">Fiyat verisi yükleniyor... (Borsa kapalıysa veri gecikebilir)</div>';
                 return;
             }
             
@@ -1379,7 +1386,7 @@
             const container = document.getElementById('predictionsContainer');
             
             if (predictions.length === 0) {
-                container.innerHTML = '<div class="loading">Henüz tahmin yapılmamış</div>';
+                container.innerHTML = '<div class="loading">Henüz tahmin yapılmamış veya veriler yüklenemedi</div>';
                 return;
             }
             
@@ -1404,7 +1411,9 @@
             predictions.forEach(pred => {
                 const predTime = new Date(pred.timestamp).toLocaleString('tr-TR');
                 const validTime = pred.predicted_for_time ? new Date(pred.predicted_for_time).toLocaleString('tr-TR') : '-';
-                const directionClass = pred.predicted_direction === 'YÜKSELİŞ' ? 'up' : 'down';
+                const isUp = pred.predicted_direction === 'YÜKSELİŞ' || pred.predicted_direction === 'YUKSELIS';
+                const directionClass = isUp ? 'up' : 'down';
+                const directionText = isUp ? 'YÜKSELİŞ' : 'DÜŞÜŞ';
                 
                 let accuracyClass = 'pending';
                 let accuracyText = 'Beklemede';
@@ -1424,7 +1433,7 @@
                         <td>₺${pred.current_price.toFixed(2)}</td>
                         <td>
                             <span class="direction-badge ${directionClass}">
-                                ${pred.predicted_direction}
+                                ${directionText}
                             </span>
                         </td>
                         <td>₺${pred.predicted_price.toFixed(2)}</td>

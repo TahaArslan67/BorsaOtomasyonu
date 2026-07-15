@@ -2626,8 +2626,35 @@ def get_market_prices():
             interval = "30m"
         
         gmstr_data = prediction_system.fetch_gmstr_data(period=period, interval=interval)
+
+        # Fallback: yfinance basarısız olursa tahmin gecmisinden fiyat al
         if gmstr_data is None or gmstr_data.empty:
-            return jsonify({'error': 'Fiyat verisi alinamadi'}), 500
+            logger.warning("yfinance basarisiz, DB'den fiyat gecmisi aliniyor...")
+            try:
+                conn = prediction_system.get_db_connection()
+                cursor = conn.cursor()
+                if prediction_system.is_postgres:
+                    cursor.execute('''
+                        SELECT timestamp, current_price FROM predictions
+                        WHERE timestamp >= NOW() - INTERVAL '%s days'
+                        ORDER BY timestamp ASC
+                    ''' % days)
+                else:
+                    cursor.execute('''
+                        SELECT timestamp, current_price FROM predictions
+                        WHERE timestamp >= datetime('now', '-%d days')
+                        ORDER BY timestamp ASC
+                    ''' % days)
+                rows = cursor.fetchall()
+                conn.close()
+                if rows:
+                    prices = [{'timestamp': str(r[0]), 'close': float(r[1])} for r in rows]
+                    logger.info(f"DB'den {len(prices)} fiyat noktasi alindi")
+                    return jsonify({'prices': prices, 'days': days, 'interval': '1h', 'source': 'db_fallback'})
+            except Exception as db_err:
+                logger.error(f"DB fiyat fallback hatasi: {db_err}")
+
+            return jsonify({'error': 'Fiyat verisi alinamadi (borsa kapali veya yfinance erisilemez)'}), 500
         
         gmstr_data = gmstr_data.copy()
         if gmstr_data.index.tz is not None:
