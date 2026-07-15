@@ -202,6 +202,39 @@ class GMSTRPredictionSystem:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+
+            # Eksik sütunları kontrol et ve ekle (PostgreSQL)
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'predictions' AND column_name = 'model_type'
+            """)
+            if cursor.fetchone() is None:
+                cursor.execute("ALTER TABLE predictions ADD COLUMN IF NOT EXISTS model_type TEXT DEFAULT 'normal'")
+                logger.info("PostgreSQL: model_type sütunu eklendi")
+
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'predictions' AND column_name = 'telegram_sent'
+            """)
+            if cursor.fetchone() is None:
+                cursor.execute("ALTER TABLE predictions ADD COLUMN IF NOT EXISTS telegram_sent INTEGER DEFAULT 0")
+                logger.info("PostgreSQL: telegram_sent sütunu eklendi")
+
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'predictions' AND column_name = 'actual_direction'
+            """)
+            if cursor.fetchone() is None:
+                cursor.execute("ALTER TABLE predictions ADD COLUMN IF NOT EXISTS actual_direction TEXT")
+                logger.info("PostgreSQL: actual_direction sütunu eklendi")
+
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'predictions' AND column_name = 'predicted_for_time'
+            """)
+            if cursor.fetchone() is None:
+                cursor.execute("ALTER TABLE predictions ADD COLUMN IF NOT EXISTS predicted_for_time TIMESTAMP")
+                logger.info("PostgreSQL: predicted_for_time sütunu eklendi")
         else:
             # SQLite tabloları
             cursor.execute('''
