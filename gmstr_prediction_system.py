@@ -379,7 +379,55 @@ class GMSTRPredictionSystem:
             return data
         except Exception as e:
             logger.error(f"GMSTR veri çekme hatası: {e}")
-            return self._gmstr_cache if self._gmstr_cache and len(self._gmstr_cache) >= 50 else None
+
+        # Direct Yahoo Finance API fallback (yfinance kutuphanesi basarisiz olursa)
+        try:
+            logger.info("Direct Yahoo Finance API fallback deneniyor...")
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            # Yahoo Finance chart API
+            yf_range_map = {"2y": "2y", "1y": "1y", "6mo": "6mo", "3mo": "3mo", "1mo": "1mo", "1d": "1mo", "max": "max"}
+            yf_interval_map = {"1h": "60m", "1d": "1d", "30m": "30m", "1mo": "1d"}
+            api_range = yf_range_map.get(period, "1mo")
+            api_interval = yf_interval_map.get(interval, "60m")
+
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/GMSTR.IS?range={api_range}&interval={api_interval}"
+            resp = requests.get(url, headers=headers, timeout=30)
+            if resp.status_code == 200:
+                json_data = resp.json()
+                result = json_data.get('chart', {}).get('result', [])
+                if result:
+                    timestamps = result[0].get('timestamp', [])
+                    quote = result[0].get('indicators', {}).get('quote', [{}])[0]
+                    opens = quote.get('open', [])
+                    highs = quote.get('high', [])
+                    lows = quote.get('low', [])
+                    closes = quote.get('close', [])
+                    volumes = quote.get('volume', [])
+
+                    rows = []
+                    for i in range(len(timestamps)):
+                        if closes[i] is not None:
+                            rows.append({
+                                'Open': opens[i], 'High': highs[i], 'Low': lows[i],
+                                'Close': closes[i], 'Volume': volumes[i] if i < len(volumes) else 0
+                            })
+                    if len(rows) >= 50:
+                        data = pd.DataFrame(rows, index=pd.to_datetime(timestamps[:len(rows)], unit='s'))
+                        self._gmstr_cache = data
+                        self._gmstr_cache_time = now
+                        self._gmstr_cache_interval = interval
+                        logger.info(f"Direct API fallback basarili: {len(data)} satir")
+                        return data
+                    else:
+                        logger.warning(f"Direct API fallback yetersiz: {len(rows)} satir")
+            else:
+                logger.warning(f"Yahoo Finance API status: {resp.status_code}")
+        except Exception as api_err:
+            logger.error(f"Direct Yahoo Finance API hatasi: {api_err}")
+
+        return self._gmstr_cache if self._gmstr_cache and len(self._gmstr_cache) >= 50 else None
     
     def fetch_market_data(self, period="2y"):
         """Piyasa verilerini çek - Cache'li"""
