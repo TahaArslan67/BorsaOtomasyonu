@@ -780,9 +780,14 @@
                         </div>
                         <div class="btn-group">
                             <button class="btn" onclick="checkMzTrigger()" id="mzCheckBtn">Sinyal Kontrol Et</button>
+                            <button class="btn" onclick="demoMzTrigger('AL')" id="mzDemoAlBtn" style="background: linear-gradient(135deg, #10b981, #059669);">▲ Demo AL</button>
+                            <button class="btn" onclick="demoMzTrigger('SAT')" id="mzDemoSatBtn" style="background: linear-gradient(135deg, #ef4444, #dc2626);">▼ Demo SAT</button>
                         </div>
                     </div>
                     <div id="mzTriggerContainer" style="padding: 16px;">
+                        <div style="background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px; color: #fbbf24; font-size: 13px;">
+                            <b>Bilgi:</b> Render'da Yahoo Finance verisi çekilemiyor. Sağdaki "Manuel fiyat" inputuna fiyat girin ve "Demo AL/SAT" ile görseldeki gibi sinyalleri görün.
+                        </div>
                         <div class="loading"><div class="spinner"></div><div>MZTrigger yükleniyor...</div></div>
                     </div>
                 </div>
@@ -1479,36 +1484,52 @@
         // === MZTrigger v1.0 ===
         let mzChart = null;
         
-        async function loadMzTrigger() {
+        async function loadMzTrigger(demoMode = null) {
             try {
                 const manualPrice = document.getElementById('manualPrice')?.value;
+                const params = new URLSearchParams();
+                if (manualPrice) params.set('manual_price', manualPrice);
+                if (demoMode) params.set('demo', demoMode);
                 let url = '/api/mztrigger';
-                if (manualPrice) url += '?manual_price=' + encodeURIComponent(manualPrice);
+                if (params.toString()) url += '?' + params.toString();
                 const response = await fetch(url);
                 const data = await response.json();
-                renderMzTrigger(data);
+                renderMzTrigger(data, demoMode);
             } catch (error) {
                 console.error('MZTrigger yükleme hatası:', error);
                 document.getElementById('mzTriggerContainer').innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">MZTrigger verisi yüklenemedi</div>';
             }
         }
         
-        function renderMzTrigger(data) {
+        async function demoMzTrigger(signal) {
+            const manualPrice = document.getElementById('manualPrice')?.value;
+            if (!manualPrice) {
+                alert('Demo sinyal görmek için lütfen "Manuel fiyat" inputuna bir fiyat girin (örn. 547).');
+                return;
+            }
+            await loadMzTrigger(signal);
+        }
+        
+        function renderMzTrigger(data, demoMode = null) {
             const container = document.getElementById('mzTriggerContainer');
             if (!data || data.error) {
-                container.innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">' + (data?.error || 'Veri yok') + '</div>';
+                const msg = data?.error === 'Veri cekilemedi' 
+                    ? 'Yahoo Finance verisi çekilemedi (Render IP bloku veya GMSTR.IS yok).<br>Sağ üstteki "Manuel fiyat" inputuna fiyat girin ve Demo AL/SAT ile sinyalleri görün.'
+                    : (data?.error || 'Veri yok');
+                container.innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">' + msg + '</div>';
                 return;
             }
             
             const signalColor = data.signal === 'AL' ? 'var(--success)' : data.signal === 'SAT' ? 'var(--danger)' : 'var(--text-secondary)';
             const signalBg = data.signal === 'AL' ? 'rgba(16,185,129,0.15)' : data.signal === 'SAT' ? 'rgba(239,68,68,0.15)' : 'rgba(148,163,184,0.1)';
             const stateColor = data.alligator_state === 'ALINGAN' ? 'var(--success)' : data.alligator_state === 'SATLINGAN' ? 'var(--danger)' : 'var(--text-secondary)';
+            const demoBadge = demoMode ? `<span style="background: rgba(245,158,11,0.2); color: #fbbf24; padding: 4px 10px; border-radius: 12px; font-size: 11px; margin-left: 8px;">DEMO: ${demoMode}</span>` : '';
             
             let html = `
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
                     <div style="background: ${signalBg}; border: 1px solid ${signalColor}; border-radius: 12px; padding: 20px; text-align: center;">
                         <div style="font-size: 14px; color: var(--text-secondary); margin-bottom: 8px;">Sinyal</div>
-                        <div style="font-size: 32px; font-weight: 700; color: ${signalColor};">${data.signal}</div>
+                        <div style="font-size: 32px; font-weight: 700; color: ${signalColor};">${data.signal}${demoBadge}</div>
                     </div>
                     <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px; text-align: center;">
                         <div style="font-size: 14px; color: var(--text-secondary); margin-bottom: 8px;">Alligator Durumu</div>
@@ -1573,6 +1594,26 @@
             const teeths = bars.map(b => b.teeth);
             const lipss = bars.map(b => b.lips);
             
+            // Sinyal noktalari: Lips/Teeth kesisimi + alligator siralamasi
+            const buyPoints = [];
+            const sellPoints = [];
+            for (let i = 1; i < bars.length; i++) {
+                const prev = bars[i - 1];
+                const curr = bars[i];
+                if (!curr.lips || !curr.teeth || !curr.jaw || !prev.lips || !prev.teeth) continue;
+                
+                const lipsCrossUp = prev.lips <= prev.teeth && curr.lips > curr.teeth;
+                const lipsCrossDown = prev.lips >= prev.teeth && curr.lips < curr.teeth;
+                const alignedUp = curr.lips > curr.teeth && curr.teeth > curr.jaw;
+                const alignedDown = curr.lips < curr.teeth && curr.teeth < curr.jaw;
+                
+                if (lipsCrossUp && alignedUp) {
+                    buyPoints.push({ x: i, y: curr.low * 0.998 });
+                } else if (lipsCrossDown && alignedDown) {
+                    sellPoints.push({ x: i, y: curr.high * 1.002 });
+                }
+            }
+            
             mzChart = new Chart(ctx, {
                 type: 'line',
                 data: {
@@ -1582,13 +1623,27 @@
                         { label: 'Jaw (13)', data: jaws, borderColor: '#3b82f6', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
                         { label: 'Teeth (8)', data: teeths, borderColor: '#ef4444', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
                         { label: 'Lips (5)', data: lipss, borderColor: '#10b981', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+                        { 
+                            label: 'AL', data: labels.map((_, i) => {
+                                const p = buyPoints.find(p => p.x === i);
+                                return p ? p.y : null;
+                            }), backgroundColor: '#10b981', borderColor: '#10b981', pointStyle: 'triangle', 
+                            pointRadius: 8, pointHoverRadius: 10, showLine: false
+                        },
+                        { 
+                            label: 'SAT', data: labels.map((_, i) => {
+                                const p = sellPoints.find(p => p.x === i);
+                                return p ? p.y : null;
+                            }), backgroundColor: '#ef4444', borderColor: '#ef4444', pointStyle: 'triangle', 
+                            pointRadius: 8, pointHoverRadius: 10, showLine: false, rotation: 180
+                        },
                     ]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
-                        legend: { labels: { color: '#94a3b8', font: { size: 11 } } }
+                        legend: { labels: { color: '#94a3b8', font: { size: 11 }, usePointStyle: true } }
                     },
                     scales: {
                         x: { ticks: { color: '#64748b', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: 'rgba(148,163,184,0.1)' } },
@@ -1599,14 +1654,17 @@
         }
         
         async function checkMzTrigger() {
+            const manualPrice = document.getElementById('manualPrice')?.value;
+            if (!manualPrice) {
+                alert('Sinyal kontrolü için lütfen "Manuel fiyat" inputuna bir fiyat girin (örn. 547).');
+                return;
+            }
             const button = document.getElementById('mzCheckBtn');
             button.disabled = true;
             button.textContent = 'Kontrol Ediliyor...';
             
             try {
-                const manualPrice = document.getElementById('manualPrice')?.value;
-                const payload = {};
-                if (manualPrice) payload.manual_price = parseFloat(manualPrice);
+                const payload = { manual_price: parseFloat(manualPrice) };
                 const response = await fetch('/api/mztrigger/check', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },

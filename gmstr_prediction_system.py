@@ -2608,7 +2608,67 @@ class MZTriggerIndicator:
             logger.debug(f"Yahoo direct API hatasi: {e}")
             return None
 
-    def calculate(self, df=None, manual_price=None):
+    def _generate_demo_data(self, current_price, demo_signal=None, bars=120):
+        """Demo modu: Manuel fiyat etrafinda AL/SAT sinyali ureten sentetik veri.
+        
+        demo_signal: 'AL' veya 'SAT' - belirtilirse son bolumde o sinyali zorlar.
+        """
+        np.random.seed(42)
+        
+        # Son 25 bar icin trend olustur (AL veya SAT)
+        if demo_signal == 'AL':
+            trend = np.linspace(-0.05, 0.03, bars)  # Asagi sonra yukari
+        elif demo_signal == 'SAT':
+            trend = np.linspace(0.05, -0.03, bars)  # Yukari sonra asagi
+        else:
+            # Rastgele sec
+            demo_signal = 'AL' if np.random.random() > 0.5 else 'SAT'
+            if demo_signal == 'AL':
+                trend = np.linspace(-0.05, 0.03, bars)
+            else:
+                trend = np.linspace(0.05, -0.03, bars)
+        
+        # Gurultu ekle
+        noise = np.cumsum(np.random.normal(0, 0.003, bars))
+        close = current_price * (1 + trend + noise * 0.5)
+        
+        # Mumlari olustur
+        opens = close.copy()
+        opens[1:] = close[:-1]
+        opens[0] = close[0] * (1 + np.random.normal(0, 0.002))
+        
+        highs = []
+        lows = []
+        for i in range(bars):
+            o, c = opens[i], close[i]
+            body = abs(c - o)
+            wick = body * (0.5 + np.random.random() * 1.0)
+            if c >= o:
+                h = max(o, c) + wick
+                l = min(o, c) - wick * 0.3
+            else:
+                h = max(o, c) + wick * 0.3
+                l = min(o, c) - wick
+            highs.append(max(o, c, h))
+            lows.append(min(o, c, l))
+        
+        dates = pd.date_range(end=datetime.now(), periods=bars, freq='1h')
+        
+        df = pd.DataFrame({
+            'Open': opens,
+            'High': np.array(highs),
+            'Low': np.array(lows),
+            'Close': close,
+            'Volume': np.random.randint(50000, 200000, bars)
+        }, index=dates)
+        
+        # Negatif/ters fiyatlari duzelt
+        df['High'] = df[['High', 'Open', 'Close']].max(axis=1) * 1.005
+        df['Low'] = df[['Low', 'Open', 'Close']].min(axis=1) * 0.995
+        df = df.dropna()
+        return df
+
+    def calculate(self, df=None, manual_price=None, demo_signal=None):
         """Alligator cizgilerini ve sinyalleri hesapla.
         
         Returns:
@@ -2624,18 +2684,12 @@ class MZTriggerIndicator:
             df = self._fetch_yahoo_direct(period="3mo", interval="1h")
         
         if df is None or len(df) < 30:
-            # Son care: manuel fiyat ile sentetik veri
+            # Son care: manuel fiyat ile sentetik veri (demo modu)
             if manual_price and isinstance(manual_price, (int, float)) and manual_price > 0:
-                logger.info(f"MZTrigger: veri yok, manuel fiyat ile sentetik veri: {manual_price}")
-                current_price = float(manual_price)
-                dates = pd.date_range(end=datetime.now(), periods=100, freq='1h')
-                df = pd.DataFrame({
-                    'Open': [current_price] * 100,
-                    'High': [current_price * 1.005] * 100,
-                    'Low': [current_price * 0.995] * 100,
-                    'Close': [current_price] * 100,
-                    'Volume': [100000] * 100
-                }, index=dates)
+                logger.info(f"MZTrigger: veri yok, manuel fiyat ile demo veri: {manual_price}")
+                df = self._generate_demo_data(float(manual_price), demo_signal)
+                if df is None or len(df) < 30:
+                    return None
             else:
                 logger.warning("MZTrigger: yetersiz veri ve manuel fiyat yok")
                 return None
@@ -2793,10 +2847,10 @@ class MZTriggerIndicator:
             logger.error(f"MZTrigger gecmis hatasi: {e}")
             return []
 
-    def check_and_notify(self, manual_price=None):
+    def check_and_notify(self, manual_price=None, demo_signal=None):
         """Mevcut sinyali kontrol et, AL/SAT ise Telegram'a bildir ve DB'ye kaydet."""
         try:
-            result = self.calculate(manual_price=manual_price)
+            result = self.calculate(manual_price=manual_price, demo_signal=demo_signal)
             if result is None:
                 return None
 
@@ -3192,7 +3246,8 @@ def get_mztrigger():
     try:
         manual_price = request.args.get('manual_price')
         mp = float(manual_price) if manual_price else None
-        result = mztrigger.calculate(manual_price=mp)
+        demo_signal = request.args.get('demo')
+        result = mztrigger.calculate(manual_price=mp, demo_signal=demo_signal)
         if result is None:
             return jsonify({'error': 'Veri cekilemedi', 'signal': 'BEKLE'}), 200
         return jsonify(result)
@@ -3218,7 +3273,8 @@ def check_mztrigger():
         data = request.get_json() or {}
         manual_price = data.get('manual_price')
         mp = float(manual_price) if manual_price else None
-        result = mztrigger.check_and_notify(manual_price=mp)
+        demo_signal = data.get('demo')
+        result = mztrigger.check_and_notify(manual_price=mp, demo_signal=demo_signal)
         if result is None:
             return jsonify({'error': 'Veri cekilemedi', 'signal': 'BEKLE'}), 200
         return jsonify(result)
