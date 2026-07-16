@@ -1748,10 +1748,14 @@
                     // ms ise saniyeye çevir
                     return Math.floor(ts > 1e10 ? ts / 1000 : ts);
                 }
-                if (ts && ts.includes && ts.includes(' ')) {
-                    return Math.floor(new Date(ts).getTime() / 1000);
+                if (!ts) return null;
+                // ISO olmayan 'YYYY-MM-DD HH:MM:SS' formati icin 'T' ekle
+                let s = String(ts);
+                if (s.includes(' ') && !s.includes('T') && !s.includes('Z')) {
+                    s = s.replace(' ', 'T');
                 }
-                return Math.floor(new Date(ts).getTime() / 1000);
+                const t = new Date(s).getTime();
+                return isNaN(t) ? null : Math.floor(t / 1000);
             }
             
             const asNum = v => typeof v === 'number' && !isNaN(v) ? v : null;
@@ -1787,6 +1791,11 @@
                 if (seen.has(m.time)) continue;
                 seen.add(m.time);
                 ohlc.push({ time: m.time, open: m.open, high: m.high, low: m.low, close: m.close });
+            }
+            
+            if (ohlc.length === 0) {
+                container.innerHTML = '<div style="padding: 20px; color: var(--text-secondary);">Grafik için geçerli veri yok</div>';
+                return;
             }
             
             candleSeries.setData(ohlc);
