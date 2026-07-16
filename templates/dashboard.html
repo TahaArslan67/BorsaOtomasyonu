@@ -770,6 +770,22 @@
                         <div class="loading"><div class="spinner"></div><div>Tahminler yükleniyor...</div></div>
                     </div>
                 </div>
+
+                <!-- MZTrigger v1.0 -->
+                <div class="card full-width">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">🐊 MZTrigger v1.0</div>
+                            <div class="card-subtitle">Bill Williams Alligator + ATR bazlı al/sat sinyalleri</div>
+                        </div>
+                        <div class="btn-group">
+                            <button class="btn" onclick="checkMzTrigger()" id="mzCheckBtn">Sinyal Kontrol Et</button>
+                        </div>
+                    </div>
+                    <div id="mzTriggerContainer" style="padding: 16px;">
+                        <div class="loading"><div class="spinner"></div><div>MZTrigger yükleniyor...</div></div>
+                    </div>
+                </div>
             </div>
             </div>
 
@@ -934,6 +950,7 @@
             loadPremarketSignal();
             loadModelInfo();
             loadSettings();
+            loadMzTrigger();
             
             // Her 5 dakikada bir verileri güncelle
             setInterval(() => {
@@ -943,6 +960,7 @@
                 checkMarketStatus();
                 loadPremarketSignal();
                 loadModelInfo();
+                loadMzTrigger();
             }, 5 * 60 * 1000);
         });
         
@@ -1456,6 +1474,156 @@
             
             html += '</tbody></table>';
             container.innerHTML = html;
+        }
+        
+        // === MZTrigger v1.0 ===
+        let mzChart = null;
+        
+        async function loadMzTrigger() {
+            try {
+                const response = await fetch('/api/mztrigger');
+                const data = await response.json();
+                renderMzTrigger(data);
+            } catch (error) {
+                console.error('MZTrigger yükleme hatası:', error);
+                document.getElementById('mzTriggerContainer').innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">MZTrigger verisi yüklenemedi</div>';
+            }
+        }
+        
+        function renderMzTrigger(data) {
+            const container = document.getElementById('mzTriggerContainer');
+            if (!data || data.error) {
+                container.innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">' + (data?.error || 'Veri yok') + '</div>';
+                return;
+            }
+            
+            const signalColor = data.signal === 'AL' ? 'var(--success)' : data.signal === 'SAT' ? 'var(--danger)' : 'var(--text-secondary)';
+            const signalBg = data.signal === 'AL' ? 'rgba(16,185,129,0.15)' : data.signal === 'SAT' ? 'rgba(239,68,68,0.15)' : 'rgba(148,163,184,0.1)';
+            const stateColor = data.alligator_state === 'ALINGAN' ? 'var(--success)' : data.alligator_state === 'SATLINGAN' ? 'var(--danger)' : 'var(--text-secondary)';
+            
+            let html = `
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                    <div style="background: ${signalBg}; border: 1px solid ${signalColor}; border-radius: 12px; padding: 20px; text-align: center;">
+                        <div style="font-size: 14px; color: var(--text-secondary); margin-bottom: 8px;">Sinyal</div>
+                        <div style="font-size: 32px; font-weight: 700; color: ${signalColor};">${data.signal}</div>
+                    </div>
+                    <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px; text-align: center;">
+                        <div style="font-size: 14px; color: var(--text-secondary); margin-bottom: 8px;">Alligator Durumu</div>
+                        <div style="font-size: 20px; font-weight: 600; color: ${stateColor};">${data.alligator_state}</div>
+                    </div>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px;">
+                    <div style="background: var(--bg-card); border-radius: 8px; padding: 12px; text-align: center;">
+                        <div style="font-size: 12px; color: var(--text-secondary);">Fiyat</div>
+                        <div style="font-size: 18px; font-weight: 600;">₺${data.price?.toFixed(2) || '-'}</div>
+                    </div>
+                    <div style="background: var(--bg-card); border-radius: 8px; padding: 12px; text-align: center;">
+                        <div style="font-size: 12px; color: var(--text-secondary);">ATR</div>
+                        <div style="font-size: 18px; font-weight: 600;">${data.atr?.toFixed(2) || '-'}</div>
+                    </div>
+                    <div style="background: var(--bg-card); border-radius: 8px; padding: 12px; text-align: center;">
+                        <div style="font-size: 12px; color: var(--text-secondary);">Hedef (1 ATR)</div>
+                        <div style="font-size: 18px; font-weight: 600; color: var(--success);">₺${data.target?.toFixed(2) || '-'}</div>
+                    </div>
+                    <div style="background: var(--bg-card); border-radius: 8px; padding: 12px; text-align: center;">
+                        <div style="font-size: 12px; color: var(--text-secondary);">Stop</div>
+                        <div style="font-size: 18px; font-weight: 600; color: var(--danger);">₺${data.stop?.toFixed(2) || '-'}</div>
+                    </div>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;">
+                    <div style="background: var(--bg-card); border-radius: 8px; padding: 12px; text-align: center; border-left: 3px solid #3b82f6;">
+                        <div style="font-size: 12px; color: #3b82f6;">🔵 Jaw (13)</div>
+                        <div style="font-size: 16px; font-weight: 600;">${data.jaw?.toFixed(2) || '-'}</div>
+                    </div>
+                    <div style="background: var(--bg-card); border-radius: 8px; padding: 12px; text-align: center; border-left: 3px solid #ef4444;">
+                        <div style="font-size: 12px; color: #ef4444;">🔴 Teeth (8)</div>
+                        <div style="font-size: 16px; font-weight: 600;">${data.teeth?.toFixed(2) || '-'}</div>
+                    </div>
+                    <div style="background: var(--bg-card); border-radius: 8px; padding: 12px; text-align: center; border-left: 3px solid #10b981;">
+                        <div style="font-size: 12px; color: #10b981;">🟢 Lips (5)</div>
+                        <div style="font-size: 16px; font-weight: 600;">${data.lips?.toFixed(2) || '-'}</div>
+                    </div>
+                </div>
+                
+                <canvas id="mzChart" style="max-height: 300px;"></canvas>
+            `;
+            
+            container.innerHTML = html;
+            
+            // Grafik ciz
+            if (data.bars && data.bars.length > 0) {
+                renderMzChart(data.bars);
+            }
+        }
+        
+        function renderMzChart(bars) {
+            const ctx = document.getElementById('mzChart');
+            if (!ctx) return;
+            
+            if (mzChart) mzChart.destroy();
+            
+            const labels = bars.map(b => b.timestamp.split(' ')[1] || b.timestamp);
+            const closes = bars.map(b => b.close);
+            const jaws = bars.map(b => b.jaw);
+            const teeths = bars.map(b => b.teeth);
+            const lipss = bars.map(b => b.lips);
+            
+            mzChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'Fiyat', data: closes, borderColor: '#f8fafc', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+                        { label: 'Jaw (13)', data: jaws, borderColor: '#3b82f6', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+                        { label: 'Teeth (8)', data: teeths, borderColor: '#ef4444', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+                        { label: 'Lips (5)', data: lipss, borderColor: '#10b981', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: '#94a3b8', font: { size: 11 } } }
+                    },
+                    scales: {
+                        x: { ticks: { color: '#64748b', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: 'rgba(148,163,184,0.1)' } },
+                        y: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: 'rgba(148,163,184,0.1)' } }
+                    }
+                }
+            });
+        }
+        
+        async function checkMzTrigger() {
+            const button = document.getElementById('mzCheckBtn');
+            button.disabled = true;
+            button.textContent = 'Kontrol Ediliyor...';
+            
+            try {
+                const response = await fetch('/api/mztrigger/check', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: '{}'
+                });
+                const result = await response.json();
+                
+                if (result.error) {
+                    alert('MZTrigger hatası: ' + result.error);
+                } else if (result.signal === 'AL' || result.signal === 'SAT') {
+                    alert(`MZTrigger sinyali: ${result.signal}\nFiyat: ₺${result.price?.toFixed(2)}\nHedef: ₺${result.target?.toFixed(2)}\nTelegram'a gönderildi!`);
+                    loadMzTrigger();
+                } else {
+                    alert('MZTrigger: Şu an sinyal yok (' + (result.alligator_state || 'BEKLE') + ')');
+                    loadMzTrigger();
+                }
+            } catch (error) {
+                console.error('MZTrigger kontrol hatası:', error);
+                alert('MZTrigger kontrol edilemedi');
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Sinyal Kontrol Et';
+            }
         }
         
         async function makePrediction() {

@@ -307,7 +307,41 @@ class GMSTRPredictionSystem:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-        
+
+            # MZTrigger sinyal tablosu
+            if self.is_postgres:
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS mztrigger_signals (
+                        id SERIAL PRIMARY KEY,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        price REAL,
+                        signal_type TEXT,
+                        alligator_state TEXT,
+                        jaw REAL,
+                        teeth REAL,
+                        lips REAL,
+                        atr REAL,
+                        target REAL,
+                        stop_loss REAL
+                    )
+                ''')
+            else:
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS mztrigger_signals (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        price REAL,
+                        signal_type TEXT,
+                        alligator_state TEXT,
+                        jaw REAL,
+                        teeth REAL,
+                        lips REAL,
+                        atr REAL,
+                        target REAL,
+                        stop_loss REAL
+                    )
+                ''')
+
         conn.commit()
         conn.close()
         logger.info("Veritabanı başlatıldı")
@@ -2499,6 +2533,261 @@ class GMSTRPredictionSystem:
             logger.error(f"Backtesting hatası: {e}")
             return None
 
+
+class MZTriggerIndicator:
+    """MZTrigger v1.0 - Bill Williams Alligator + ATR bazli al/sat sinyal indikatoru.
+    
+    Alligator cizgileri:
+    - Jaw (Mavi): SMMA(hl2, 13) - 8 bar ileri kaydirilmis
+    - Teeth (Kirmizi): SMMA(hl2, 8) - 5 bar ileri kaydirilmis
+    - Lips (Yesil): SMMA(hl2, 5) - 3 bar ileri kaydirilmis
+    
+    Sinyal mantigi:
+    - AL: Lips > Teeth > Jaw (ucu yukari sirali) ve Lips Teeth'i yukari kesmis
+    - SAT: Lips < Teeth < Jaw (ucu asagi sirali) ve Lips Teeth'i asagi kesmis
+    - Hedef: 1 ATR
+    """
+
+    def __init__(self, prediction_system):
+        self.ps = prediction_system
+        self._cache = None
+        self._cache_time = None
+        self._cache_ttl = 300  # 5 dakika
+
+    def _smma(self, series, period):
+        """Smoothed Moving Average (RMA) hesapla."""
+        return series.ewm(alpha=1.0/period, adjust=False).mean()
+
+    def _atr(self, df, period=14):
+        """Average True Range hesapla."""
+        high = df['High']
+        low = df['Low']
+        close = df['Close']
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        return self._smma(tr, period)
+
+    def calculate(self, df=None):
+        """Alligator cizgilerini ve sinyalleri hesapla.
+        
+        Returns:
+            dict: {
+                'jaw': float, 'teeth': float, 'lips': float,
+                'atr': float, 'signal': 'AL'|'SAT'|'BEKLE',
+                'target': float, 'stop': float, 'price': float,
+                'alligator_state': str, 'bars': list
+            }
+        """
+        if df is None:
+            df = self.ps.fetch_gmstr_data(period="3mo", interval="1h")
+        
+        if df is None or len(df) < 30:
+            logger.warning("MZTrigger: yetersiz veri")
+            return None
+
+        hl2 = (df['High'] + df['Low']) / 2
+
+        # Alligator cizgileri (shift yapilmamis - mevcut degerler)
+        jaw = self._smma(hl2, 13)
+        teeth = self._smma(hl2, 8)
+        lips = self._smma(hl2, 5)
+
+        # ATR
+        atr = self._atr(df, 14)
+        current_atr = atr.iloc[-1] if not atr.empty else 0
+        if pd.isna(current_atr):
+            current_atr = 0
+
+        current_price = df['Close'].iloc[-1]
+        current_jaw = jaw.iloc[-1]
+        current_teeth = teeth.iloc[-1]
+        current_lips = lips.iloc[-1]
+
+        # Alligator durumu
+        if current_lips > current_teeth > current_jaw:
+            alligator_state = "ALINGAN"  # Yukari sirali - bullish
+        elif current_lips < current_teeth < current_jaw:
+            alligator_state = "SATLINGAN"  # Asagi sirali - bearish
+        else:
+            alligator_state = "KAPALI"  # Alligator uyuyor - no trend
+
+        # Sinyal: Lips/Teeth kesisimi + alligator siralamasi
+        prev_lips = lips.iloc[-2] if len(lips) >= 2 else current_lips
+        prev_teeth = teeth.iloc[-2] if len(teeth) >= 2 else current_teeth
+
+        signal = "BEKLE"
+        target = current_price
+        stop = current_price
+
+        # AL sinyali: Lips Teeth'i yukari kesmis ve ucu yukari sirali
+        if prev_lips <= prev_teeth and current_lips > current_teeth:
+            if current_lips > current_teeth > current_jaw:
+                signal = "AL"
+                target = current_price + current_atr
+                stop = current_price - current_atr * 0.5
+
+        # SAT sinyali: Lips Teeth'i asagi kesmis ve ucu asagi sirali
+        if prev_lips >= prev_teeth and current_lips < current_teeth:
+            if current_lips < current_teeth < current_jaw:
+                signal = "SAT"
+                target = current_price - current_atr
+                stop = current_price + current_atr * 0.5
+
+        # Son 50 bar icin grafik verisi
+        bars = []
+        for i in range(-50, 0):
+            idx = df.index[i]
+            bars.append({
+                'timestamp': idx.strftime('%Y-%m-%d %H:%M:%S') if hasattr(idx, 'strftime') else str(idx),
+                'close': float(df['Close'].iloc[i]),
+                'jaw': float(jaw.iloc[i]) if not pd.isna(jaw.iloc[i]) else None,
+                'teeth': float(teeth.iloc[i]) if not pd.isna(teeth.iloc[i]) else None,
+                'lips': float(lips.iloc[i]) if not pd.isna(lips.iloc[i]) else None,
+                'atr': float(atr.iloc[i]) if not pd.isna(atr.iloc[i]) else 0,
+            })
+
+        return {
+            'price': float(current_price),
+            'jaw': float(current_jaw) if not pd.isna(current_jaw) else 0,
+            'teeth': float(current_teeth) if not pd.isna(current_teeth) else 0,
+            'lips': float(current_lips) if not pd.isna(current_lips) else 0,
+            'atr': float(current_atr),
+            'signal': signal,
+            'target': float(target),
+            'stop': float(stop),
+            'alligator_state': alligator_state,
+            'bars': bars,
+            'timestamp': datetime.now().isoformat(),
+        }
+
+    def save_signal(self, signal_data):
+        """Sinyali veritabanina kaydet."""
+        try:
+            conn = self.ps.get_db_connection()
+            cursor = conn.cursor()
+            now = datetime.now()
+
+            if self.ps.is_postgres:
+                cursor.execute('''
+                    INSERT INTO mztrigger_signals (timestamp, price, signal_type, alligator_state, jaw, teeth, lips, atr, target, stop_loss)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                ''', (now, signal_data['price'], signal_data['signal'], signal_data['alligator_state'],
+                      signal_data['jaw'], signal_data['teeth'], signal_data['lips'], signal_data['atr'],
+                      signal_data['target'], signal_data['stop']))
+                sig_id = cursor.fetchone()[0]
+            else:
+                cursor.execute('''
+                    INSERT INTO mztrigger_signals (timestamp, price, signal_type, alligator_state, jaw, teeth, lips, atr, target, stop_loss)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (now, signal_data['price'], signal_data['signal'], signal_data['alligator_state'],
+                      signal_data['jaw'], signal_data['teeth'], signal_data['lips'], signal_data['atr'],
+                      signal_data['target'], signal_data['stop']))
+                sig_id = cursor.lastrowid
+
+            conn.commit()
+            conn.close()
+            return sig_id
+        except Exception as e:
+            logger.error(f"MZTrigger sinyal kaydetme hatasi: {e}")
+            return None
+
+    def get_history(self, days=7):
+        """Son N gunluk sinyal gecmisini getir."""
+        try:
+            conn = self.ps.get_db_connection()
+            cursor = conn.cursor()
+            ph = '%s' if self.ps.is_postgres else '?'
+
+            if self.ps.is_postgres:
+                cursor.execute(f'''
+                    SELECT timestamp, price, signal_type, alligator_state, jaw, teeth, lips, atr, target, stop_loss
+                    FROM mztrigger_signals
+                    WHERE timestamp >= NOW() - INTERVAL '{int(days)} days'
+                    ORDER BY timestamp DESC
+                    LIMIT 100
+                ''')
+            else:
+                cursor.execute(f'''
+                    SELECT timestamp, price, signal_type, alligator_state, jaw, teeth, lips, atr, target, stop_loss
+                    FROM mztrigger_signals
+                    WHERE timestamp >= datetime('now', '-{int(days)} days')
+                    ORDER BY timestamp DESC
+                    LIMIT 100
+                ''')
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            signals = []
+            for r in rows:
+                signals.append({
+                    'timestamp': str(r[0]),
+                    'price': float(r[1]) if r[1] else 0,
+                    'signal': r[2],
+                    'alligator_state': r[3],
+                    'jaw': float(r[4]) if r[4] else 0,
+                    'teeth': float(r[5]) if r[5] else 0,
+                    'lips': float(r[6]) if r[6] else 0,
+                    'atr': float(r[7]) if r[7] else 0,
+                    'target': float(r[8]) if r[8] else 0,
+                    'stop': float(r[9]) if r[9] else 0,
+                })
+            return signals
+        except Exception as e:
+            logger.error(f"MZTrigger gecmis hatasi: {e}")
+            return []
+
+    def check_and_notify(self):
+        """Mevcut sinyali kontrol et, AL/SAT ise Telegram'a bildir ve DB'ye kaydet."""
+        try:
+            result = self.calculate()
+            if result is None:
+                return None
+
+            # Sadece AL veya SAT sinyallerinde bildirim gonder
+            if result['signal'] in ('AL', 'SAT'):
+                # Son sinyali kontrol et - ayni yonde tekrar bildirim gonderme
+                history = self.get_history(days=1)
+                if history and history[0]['signal'] == result['signal']:
+                    # Son 30 dk icinde ayni sinyal gonderilmisse atla
+                    last_ts = history[0]['timestamp']
+                    logger.info(f"MZTrigger: son sinyal ayni ({result['signal']}), tekrar bildirim atlandi")
+                    return result
+
+                # DB'ye kaydet
+                self.save_signal(result)
+
+                # Telegram bildirim
+                emoji = "🟢" if result['signal'] == 'AL' else "🔴"
+                direction = "ALIM" if result['signal'] == 'AL' else "SATIS"
+                message = f"""<b>MZTrigger v1.0 Sinyal</b> {emoji}
+
+<b>Yon:</b> {direction}
+<b>Fiyat:</b> ₺{result['price']:.2f}
+<b>Alligator:</b> {result['alligator_state']}
+<b>ATR:</b> {result['atr']:.2f}
+<b>Hedef (1 ATR):</b> ₺{result['target']:.2f}
+<b>Stop:</b> ₺{result['stop']:.2f}
+
+<b>Alligator Cizgileri:</b>
+🔵 Jaw: {result['jaw']:.2f}
+🔴 Teeth: {result['teeth']:.2f}
+🟢 Lips: {result['lips']:.2f}
+
+⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"""
+
+                self.ps.send_telegram_message(message)
+                logger.info(f"MZTrigger sinyal gonderildi: {direction} @ {result['price']:.2f}")
+
+            return result
+        except Exception as e:
+            logger.error(f"MZTrigger check hatasi: {e}")
+            return None
+
+
 # Flask API + SocketIO
 app = Flask(__name__)
 app.jinja_env.auto_reload = True
@@ -2513,6 +2802,7 @@ except ImportError:
 
 prediction_system = GMSTRPredictionSystem()
 swing_predictor = GMSTRSwingPredictor() if SWING_AVAILABLE else None
+mztrigger = MZTriggerIndicator(prediction_system)
 
 @app.route('/health')
 def health_check():
@@ -2841,6 +3131,41 @@ def get_model_info():
                 'features_used': 0
             })
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/mztrigger')
+def get_mztrigger():
+    """MZTrigger v1.0 mevcut sinyal durumu"""
+    try:
+        result = mztrigger.calculate()
+        if result is None:
+            return jsonify({'error': 'Veri cekilemedi', 'signal': 'BEKLE'}), 200
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"MZTrigger API hatasi: {e}")
+        return jsonify({'error': str(e), 'signal': 'BEKLE'}), 500
+
+@app.route('/api/mztrigger/history')
+def get_mztrigger_history():
+    """MZTrigger sinyal gecmisi"""
+    try:
+        days = int(request.args.get('days', 7))
+        signals = mztrigger.get_history(days=days)
+        return jsonify(signals)
+    except Exception as e:
+        logger.error(f"MZTrigger history API hatasi: {e}")
+        return jsonify([])
+
+@app.route('/api/mztrigger/check', methods=['POST'])
+def check_mztrigger():
+    """MZTrigger manuel kontrol - sinyal varsa Telegram'a gonder"""
+    try:
+        result = mztrigger.check_and_notify()
+        if result is None:
+            return jsonify({'error': 'Veri cekilemedi'}), 500
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"MZTrigger check API hatasi: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/predict', methods=['POST'])
@@ -3315,6 +3640,10 @@ def scheduled_predictions():
 
     # Her 10 dakikada tahminleri guncelle
     schedule.every(10).minutes.do(lambda: prediction_system.update_predictions())
+
+    # Her 5 dakikada MZTrigger kontrol - sinyal varsa Telegram'a gonder
+    schedule.every(5).minutes.do(lambda: mztrigger.check_and_notify())
+    logger.info("Schedule: her 5 dk MZTrigger kontrol")
 
     # Haftalik auto-optimize: Pazar 23:00
     def weekly_optimize():
