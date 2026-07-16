@@ -781,12 +781,14 @@
                         <div class="btn-group" style="flex-wrap: wrap; gap: 8px;">
                             <select id="mzSymbol" class="input-field" style="width: 130px;" onchange="loadMzTrigger()">
                                 <option value="GMSTR.IS">GMSTR.IS</option>
-                                <option value="XAGUSD=X">Silver (XAG/USD)</option>
-                                <option value="SI=F">Gümüş Futures (SI=F)</option>
-                                <option value="GC=F">Altın Futures (GC=F)</option>
-                                <option value="SLV">SLV ETF</option>
-                                <option value="BTCUSDT">BTC/USDT</option>
-                                <option value="ETHUSDT">ETH/USDT</option>
+                                <option value="XAGUSD=X">Silver Spot (Yahoo)</option>
+                                <option value="SI=F">Gümüş Futures (Yahoo)</option>
+                                <option value="GC=F">Altın Futures (Yahoo)</option>
+                                <option value="SLV">SLV ETF (Yahoo)</option>
+                                <option value="KAGUSDT">Kinesis Silver (CoinGecko)</option>
+                                <option value="BTCUSDT">Bitcoin (CoinGecko)</option>
+                                <option value="ETHUSDT">Ethereum (CoinGecko)</option>
+                                <option value="SOLUSDT">Solana (CoinGecko)</option>
                             </select>
                             <button class="btn" onclick="loadRealData()" id="mzRealBtn" style="background: linear-gradient(135deg, #3b82f6, #2563eb);">Gerçek Veri Çek</button>
                             <button class="btn" onclick="checkMzTrigger()" id="mzCheckBtn">Sinyal Kontrol Et</button>
@@ -796,7 +798,7 @@
                     </div>
                     <div id="mzTriggerContainer" style="padding: 16px;">
                         <div style="background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px; color: #fbbf24; font-size: 13px;">
-                            <b>Bilgi:</b> Render ücretsiz sunucuda Yahoo/Binance engellendiği için "Gerçek Veri Çek" butonu veriyi tarayıcınızdan çeker. BTC/ETH için çalışır. Gümüş için API key gerekir.
+                            <b>Bilgi:</b> Render ücretsiz sunucuda Yahoo/Binance engellendiği için "Gerçek Veri Çek" veriyi tarayıcınızdan çeker. CoinGecko destekli: BTC, ETH, SOL, Kinesis Silver (KAG). Yahoo sembolleri için demo/mod kullanın.
                         </div>
                         <div class="loading"><div class="spinner"></div><div>MZTrigger yükleniyor...</div></div>
                     </div>
@@ -1525,12 +1527,14 @@
         function getMzSymbolInfo(symbol) {
             const map = {
                 'GMSTR.IS': 'GMSTR.IS (Türkiye)',
-                'XAGUSD=X': 'Silver / USD',
+                'XAGUSD=X': 'Silver Spot',
                 'SI=F': 'Gümüş Futures',
                 'GC=F': 'Altın Futures',
                 'SLV': 'SLV ETF',
+                'KAGUSDT': 'Kinesis Silver (CoinGecko)',
                 'BTCUSDT': 'Bitcoin / USDT',
-                'ETHUSDT': 'Ethereum / USDT'
+                'ETHUSDT': 'Ethereum / USDT',
+                'SOLUSDT': 'Solana / USDT'
             };
             return map[symbol] || symbol;
         }
@@ -1553,6 +1557,7 @@
                     'BTCUSDT': 'bitcoin',
                     'ETHUSDT': 'ethereum',
                     'SOLUSDT': 'solana',
+                    'KAGUSDT': 'kinesis-silver',
                     'BNBUSDT': 'binancecoin',
                     'ADAUSDT': 'cardano',
                     'XRPUSDT': 'ripple',
