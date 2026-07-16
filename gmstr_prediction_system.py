@@ -2569,7 +2569,46 @@ class MZTriggerIndicator:
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         return self._smma(tr, period)
 
-    def calculate(self, df=None):
+    def _fetch_yahoo_direct(self, period="3mo", interval="1h"):
+        """Direct Yahoo Finance API fallback - yfinance kutuphanesi calismadiginda."""
+        try:
+            session = requests.Session()
+            session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+            url = f"https://query2.finance.yahoo.com/v8/finance/chart/GMSTR.IS?range={period}&interval={interval}"
+            resp = session.get(url, timeout=20)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            result = data.get('chart', {}).get('result', [])
+            if not result:
+                return None
+            timestamps = result[0].get('timestamp', [])
+            quote = result[0].get('indicators', {}).get('quote', [{}])[0]
+            opens = quote.get('open', [])
+            highs = quote.get('high', [])
+            lows = quote.get('low', [])
+            closes = quote.get('close', [])
+            volumes = quote.get('volume', [])
+            
+            if not timestamps or not closes:
+                return None
+            
+            import pandas as pd_inner
+            dates = [pd_inner.Timestamp.fromtimestamp(ts) for ts in timestamps]
+            df = pd_inner.DataFrame({
+                'Open': opens,
+                'High': highs,
+                'Low': lows,
+                'Close': closes,
+                'Volume': volumes
+            }, index=dates)
+            df = df.dropna()
+            return df if len(df) > 0 else None
+        except Exception as e:
+            logger.debug(f"Yahoo direct API hatasi: {e}")
+            return None
+
+    def calculate(self, df=None, manual_price=None):
         """Alligator cizgilerini ve sinyalleri hesapla.
         
         Returns:
@@ -2581,11 +2620,29 @@ class MZTriggerIndicator:
             }
         """
         if df is None:
+            # Once yfinance dene
             df = self.ps.fetch_gmstr_data(period="3mo", interval="1h")
+            # yfinance basarisiz ise direct API dene
+            if df is None or len(df) < 30:
+                logger.info("MZTrigger: yfinance basarisiz, direct Yahoo API deneniyor")
+                df = self._fetch_yahoo_direct(period="3mo", interval="1h")
         
         if df is None or len(df) < 30:
-            logger.warning("MZTrigger: yetersiz veri")
-            return None
+            # Son care: manuel fiyat ile sentetik veri
+            if manual_price and isinstance(manual_price, (int, float)) and manual_price > 0:
+                logger.info(f"MZTrigger: veri yok, manuel fiyat ile sentetik veri: {manual_price}")
+                current_price = float(manual_price)
+                dates = pd.date_range(end=datetime.now(), periods=100, freq='1h')
+                df = pd.DataFrame({
+                    'Open': [current_price] * 100,
+                    'High': [current_price * 1.005] * 100,
+                    'Low': [current_price * 0.995] * 100,
+                    'Close': [current_price] * 100,
+                    'Volume': [100000] * 100
+                }, index=dates)
+            else:
+                logger.warning("MZTrigger: yetersiz veri ve manuel fiyat yok")
+                return None
 
         hl2 = (df['High'] + df['Low']) / 2
 
@@ -3137,7 +3194,9 @@ def get_model_info():
 def get_mztrigger():
     """MZTrigger v1.0 mevcut sinyal durumu"""
     try:
-        result = mztrigger.calculate()
+        manual_price = request.args.get('manual_price')
+        mp = float(manual_price) if manual_price else None
+        result = mztrigger.calculate(manual_price=mp)
         if result is None:
             return jsonify({'error': 'Veri cekilemedi', 'signal': 'BEKLE'}), 200
         return jsonify(result)

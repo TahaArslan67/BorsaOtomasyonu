@@ -1481,7 +1481,10 @@
         
         async function loadMzTrigger() {
             try {
-                const response = await fetch('/api/mztrigger');
+                const manualPrice = document.getElementById('manualPrice')?.value;
+                let url = '/api/mztrigger';
+                if (manualPrice) url += '?manual_price=' + encodeURIComponent(manualPrice);
+                const response = await fetch(url);
                 const data = await response.json();
                 renderMzTrigger(data);
             } catch (error) {
