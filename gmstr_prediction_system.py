@@ -3016,12 +3016,14 @@ class MZTriggerIndicator:
             logger.error(f"MZTrigger gecmis hatasi: {e}")
             return []
 
-    def check_and_notify(self, manual_price=None, demo_signal=None):
+    def check_and_notify(self, manual_price=None, demo_signal=None, symbol='GMSTR.IS'):
         """Mevcut sinyali kontrol et, AL/SAT ise Telegram'a bildir ve DB'ye kaydet."""
         try:
-            result = self.calculate(manual_price=manual_price, demo_signal=demo_signal)
+            result = self.calculate(manual_price=manual_price, demo_signal=demo_signal, symbol=symbol)
             if result is None:
                 return None
+
+            currency = '$' if symbol in ('KAGUSDT', 'XAGUSD=X', 'SI=F', 'GC=F', 'SLV') else '₺'
 
             # Sadece AL veya SAT sinyallerinde bildirim gonder
             if result['signal'] in ('AL', 'SAT'):
@@ -3041,12 +3043,13 @@ class MZTriggerIndicator:
                 direction = "ALIM" if result['signal'] == 'AL' else "SATIS"
                 message = f"""<b>MZTrigger v1.0 Sinyal</b> {emoji}
 
+<b>Sembol:</b> {symbol}
 <b>Yon:</b> {direction}
-<b>Fiyat:</b> ₺{result['price']:.2f}
+<b>Fiyat:</b> {currency}{result['price']:.2f}
 <b>Alligator:</b> {result['alligator_state']}
 <b>ATR:</b> {result['atr']:.2f}
-<b>Hedef (1 ATR):</b> ₺{result['target']:.2f}
-<b>Stop:</b> ₺{result['stop']:.2f}
+<b>Hedef (1 ATR):</b> {currency}{result['target']:.2f}
+<b>Stop:</b> {currency}{result['stop']:.2f}
 
 <b>Alligator Cizgileri:</b>
 🔵 Jaw: {result['jaw']:.2f}
@@ -3056,7 +3059,7 @@ class MZTriggerIndicator:
 ⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"""
 
                 self.ps.send_telegram_message(message)
-                logger.info(f"MZTrigger sinyal gonderildi: {direction} @ {result['price']:.2f}")
+                logger.info(f"MZTrigger sinyal gonderildi: {symbol} {direction} @ {result['price']:.2f}")
 
             return result
         except Exception as e:
@@ -3433,6 +3436,7 @@ def calc_mztrigger():
         symbol = data.get('symbol', 'CUSTOM').strip().upper()
         bars = data.get('bars', [])
         demo_signal = data.get('demo')
+        notify = data.get('notify', False)
         
         if not bars or len(bars) < 30:
             return jsonify({'error': 'Yetersiz veri', 'signal': 'BEKLE'}), 200
@@ -3468,6 +3472,34 @@ def calc_mztrigger():
         result = mztrigger.calculate(df=df, symbol=symbol, demo_signal=demo_signal)
         if result is None:
             return jsonify({'error': 'Hesaplanamadi', 'signal': 'BEKLE'}), 200
+        
+        # notify=true ise AL/SAT sinyali Telegram'a gitsin (browser CoinGecko verisi icin)
+        if notify and result.get('signal') in ('AL', 'SAT'):
+            history = mztrigger.get_history(days=1)
+            if not history or history[0]['signal'] != result['signal']:
+                mztrigger.save_signal(result)
+                currency = '$' if symbol in ('KAGUSDT', 'XAGUSD=X', 'SI=F', 'GC=F', 'SLV') else '₺'
+                emoji = "🟢" if result['signal'] == 'AL' else "🔴"
+                direction = "ALIM" if result['signal'] == 'AL' else "SATIS"
+                message = f"""<b>MZTrigger v1.0 Sinyal</b> {emoji}
+
+<b>Sembol:</b> {symbol}
+<b>Yon:</b> {direction}
+<b>Fiyat:</b> {currency}{result['price']:.2f}
+<b>Alligator:</b> {result['alligator_state']}
+<b>ATR:</b> {result['atr']:.2f}
+<b>Hedef (1 ATR):</b> {currency}{result['target']:.2f}
+<b>Stop:</b> {currency}{result['stop']:.2f}
+
+<b>Alligator Cizgileri:</b>
+🔵 Jaw: {result['jaw']:.2f}
+🔴 Teeth: {result['teeth']:.2f}
+🟢 Lips: {result['lips']:.2f}
+
+⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"""
+                prediction_system.send_telegram_message(message)
+                logger.info(f"MZTrigger notify (calc): {symbol} {direction} @ {result['price']:.2f}")
+        
         return jsonify(result)
     except Exception as e:
         logger.error(f"MZTrigger calc API hatasi: {e}")

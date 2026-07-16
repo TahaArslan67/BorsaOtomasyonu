@@ -9,6 +9,7 @@
     <meta http-equiv="Expires" content="0">
     <title>GMSTR Tahmin Sistemi</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -779,26 +780,20 @@
                             <div class="card-subtitle">Bill Williams Alligator + ATR bazlı al/sat sinyalleri</div>
                         </div>
                         <div class="btn-group" style="flex-wrap: wrap; gap: 8px;">
-                            <select id="mzSymbol" class="input-field" style="width: 130px;" onchange="loadMzTrigger()">
-                                <option value="GMSTR.IS">GMSTR.IS</option>
-                                <option value="XAGUSD=X">Silver Spot (Yahoo)</option>
-                                <option value="SI=F">Gümüş Futures (Yahoo)</option>
-                                <option value="GC=F">Altın Futures (Yahoo)</option>
-                                <option value="SLV">SLV ETF (Yahoo)</option>
-                                <option value="KAGUSDT">Kinesis Silver (CoinGecko)</option>
-                                <option value="BTCUSDT">Bitcoin (CoinGecko)</option>
-                                <option value="ETHUSDT">Ethereum (CoinGecko)</option>
-                                <option value="SOLUSDT">Solana (CoinGecko)</option>
+                            <select id="mzSymbol" class="input-field" style="width: 160px;" onchange="loadMzTrigger()">
+                                <option value="GMSTR.IS">GMSTR.IS (Türkiye)</option>
+                                <option value="KAGUSDT">Kinesis Silver / USD</option>
                             </select>
                             <button class="btn" onclick="loadRealData()" id="mzRealBtn" style="background: linear-gradient(135deg, #3b82f6, #2563eb);">Gerçek Veri Çek</button>
                             <button class="btn" onclick="checkMzTrigger()" id="mzCheckBtn">Sinyal Kontrol Et</button>
                             <button class="btn" onclick="demoMzTrigger('AL')" id="mzDemoAlBtn" style="background: linear-gradient(135deg, #10b981, #059669);">▲ Demo AL</button>
                             <button class="btn" onclick="demoMzTrigger('SAT')" id="mzDemoSatBtn" style="background: linear-gradient(135deg, #ef4444, #dc2626);">▼ Demo SAT</button>
+                            <button class="btn" onclick="toggleMzAutoCheck()" id="mzAutoBtn" style="background: linear-gradient(135deg, #8b5cf6, #7c3aed);">🔔 Oto: KAPALI</button>
                         </div>
                     </div>
                     <div id="mzTriggerContainer" style="padding: 16px;">
                         <div style="background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px; color: #fbbf24; font-size: 13px;">
-                            <b>Bilgi:</b> Render ücretsiz sunucuda Yahoo/Binance engellendiği için "Gerçek Veri Çek" veriyi tarayıcınızdan çeker. CoinGecko destekli: BTC, ETH, SOL, Kinesis Silver (KAG). Yahoo sembolleri için demo/mod kullanın.
+                            <b>Bilgi:</b> GMSTR.IS için demo/mod veya manuel fiyat kullanın. Kinesis Silver (KAG) gerçek verisi tarayıcınızdan CoinGecko üzerinden çekilir. "Sinyal Kontrol Et" veya 🔔 Oto açıkken AL/SAT oluşunca Telegram'a bildirim gider.
                         </div>
                         <div class="loading"><div class="spinner"></div><div>MZTrigger yükleniyor...</div></div>
                     </div>
@@ -1495,6 +1490,14 @@
         
         // === MZTrigger v1.0 ===
         let mzChart = null;
+        let mzChartContainer = null;
+        let mzAutoCheckInterval = null;
+        let mzLastSignal = null;
+        let mzLastData = null;
+        
+        function getMzSymbolInfo(symbol) {
+            return symbol === 'KAGUSDT' ? 'Kinesis Silver / USD' : 'GMSTR.IS (Türkiye)';
+        }
         
         async function loadMzTrigger(demoMode = null) {
             try {
@@ -1524,27 +1527,12 @@
             await loadMzTrigger(signal);
         }
         
-        function getMzSymbolInfo(symbol) {
-            const map = {
-                'GMSTR.IS': 'GMSTR.IS (Türkiye)',
-                'XAGUSD=X': 'Silver Spot',
-                'SI=F': 'Gümüş Futures',
-                'GC=F': 'Altın Futures',
-                'SLV': 'SLV ETF',
-                'KAGUSDT': 'Kinesis Silver (CoinGecko)',
-                'BTCUSDT': 'Bitcoin / USDT',
-                'ETHUSDT': 'Ethereum / USDT',
-                'SOLUSDT': 'Solana / USDT'
-            };
-            return map[symbol] || symbol;
-        }
-        
         async function loadRealData() {
             const symbol = document.getElementById('mzSymbol')?.value || 'GMSTR.IS';
             const container = document.getElementById('mzTriggerContainer');
             
-            if (!symbol.endsWith('USDT')) {
-                container.innerHTML = '<div style="padding: 20px; color: var(--text-secondary);">Bu sembol için tarayıcıdan ücretsiz gerçek veri mevcut değil. BTC/ETH seçin veya manuel fiyatla Demo AL/SAT kullanın.</div>';
+            if (symbol === 'GMSTR.IS') {
+                container.innerHTML = '<div style="padding: 20px; color: var(--text-secondary);">GMSTR.IS için gerçek veri Render sunucusunda engellendi. Sağ üstteki "Manuel fiyat" inputuna fiyat girin ve Demo AL/SAT veya Sinyal Kontrol Et kullanın.</div>';
                 return;
             }
             
@@ -1553,16 +1541,7 @@
             btn.textContent = 'Veri Çekiliyor...';
             
             try {
-                const coinMap = {
-                    'BTCUSDT': 'bitcoin',
-                    'ETHUSDT': 'ethereum',
-                    'SOLUSDT': 'solana',
-                    'KAGUSDT': 'kinesis-silver',
-                    'BNBUSDT': 'binancecoin',
-                    'ADAUSDT': 'cardano',
-                    'XRPUSDT': 'ripple',
-                    'DOGEUSDT': 'dogecoin'
-                };
+                const coinMap = { 'KAGUSDT': 'kinesis-silver' };
                 const coinId = coinMap[symbol];
                 if (!coinId) {
                     throw new Error('CoinGecko desteği yok: ' + symbol);
@@ -1604,7 +1583,7 @@
                 renderMzTrigger(data, null, symbol);
             } catch (error) {
                 console.error('Gerçek veri hatası:', error);
-                container.innerHTML = '<div style="padding: 20px; color: var(--text-secondary);">Gerçek veri çekilemedi: ' + error.message + '<br>BTC/ETH dışı sembollerde manuel fiyatla Demo AL/SAT kullanın.</div>';
+                container.innerHTML = '<div style="padding: 20px; color: var(--text-secondary);">Gerçek veri çekilemedi: ' + error.message + '<br>Manuel fiyatla Demo AL/SAT kullanabilirsiniz.</div>';
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Gerçek Veri Çek';
@@ -1615,17 +1594,18 @@
             const container = document.getElementById('mzTriggerContainer');
             if (!data || data.error) {
                 const msg = data?.error === 'Veri cekilemedi' 
-                    ? 'Yahoo Finance verisi çekilemedi (Render IP bloku veya GMSTR.IS yok).<br>Sağ üstteki "Manuel fiyat" inputuna fiyat girin ve Demo AL/SAT ile sinyalleri görün.'
+                    ? 'GMSTR.IS gerçek verisi Render sunucusunda engellendi.<br>Sağ üstteki "Manuel fiyat" inputuna fiyat girin ve Demo AL/SAT ile sinyalleri görün.'
                     : (data?.error || 'Veri yok');
                 container.innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">' + msg + '</div>';
                 return;
             }
             
+            mzLastData = data;
             const signalColor = data.signal === 'AL' ? 'var(--success)' : data.signal === 'SAT' ? 'var(--danger)' : 'var(--text-secondary)';
             const signalBg = data.signal === 'AL' ? 'rgba(16,185,129,0.15)' : data.signal === 'SAT' ? 'rgba(239,68,68,0.15)' : 'rgba(148,163,184,0.1)';
             const stateColor = data.alligator_state === 'ALINGAN' ? 'var(--success)' : data.alligator_state === 'SATLINGAN' ? 'var(--danger)' : 'var(--text-secondary)';
             const demoBadge = demoMode ? `<span style="background: rgba(245,158,11,0.2); color: #fbbf24; padding: 4px 10px; border-radius: 12px; font-size: 11px; margin-left: 8px;">DEMO: ${demoMode}</span>` : '';
-            const currencySymbol = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'KAGUSDT', 'XAGUSD=X', 'SI=F', 'GC=F', 'SLV'].includes(symbol) ? '$' : '₺';
+            const currencySymbol = symbol === 'KAGUSDT' ? '$' : '₺';
             
             let html = `
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding: 10px 14px; background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border-color);">
@@ -1683,7 +1663,7 @@
                     </div>
                 </div>
                 
-                <canvas id="mzChart" style="max-height: 300px;"></canvas>
+                <div id="mzChart" style="height: 380px; width: 100%; border-radius: 8px; border: 1px solid var(--border-color); overflow: hidden;"></div>
                 
                 <div style="margin-top: 20px;">
                     <div style="font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--text-primary);">📊 Son 1 Aylık Sinyal Geçmişi</div>
@@ -1695,9 +1675,9 @@
             
             container.innerHTML = html;
             
-            // Grafik ciz
+            // TradingView tarzi mum grafik ciz
             if (data.bars && data.bars.length > 0) {
-                renderMzChart(data.bars);
+                renderMzLightweightChart(data.bars, data.signals_history || []);
             }
         }
         
@@ -1728,81 +1708,117 @@
             return rows;
         }
         
-        function renderMzChart(bars) {
-            const ctx = document.getElementById('mzChart');
-            if (!ctx) return;
+        function renderMzLightweightChart(bars, signalsHistory) {
+            const container = document.getElementById('mzChart');
+            if (!container) return;
             
-            if (mzChart) mzChart.destroy();
+            if (mzChart) {
+                mzChart.remove();
+                mzChart = null;
+            }
+            container.innerHTML = '';
             
-            const labels = bars.map(b => b.timestamp.split(' ')[1] || b.timestamp);
-            const closes = bars.map(b => b.close);
-            const jaws = bars.map(b => b.jaw);
-            const teeths = bars.map(b => b.teeth);
-            const lipss = bars.map(b => b.lips);
+            const chart = LightweightCharts.createChart(container, {
+                layout: {
+                    background: { color: 'transparent' },
+                    textColor: '#94a3b8',
+                },
+                grid: {
+                    vertLines: { color: 'rgba(148, 163, 184, 0.1)' },
+                    horzLines: { color: 'rgba(148, 163, 184, 0.1)' },
+                },
+                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                rightPriceScale: { borderColor: 'rgba(148, 163, 184, 0.2)' },
+                timeScale: { borderColor: 'rgba(148, 163, 184, 0.2)', timeVisible: true, secondsVisible: false },
+                autoSize: true,
+            });
+            mzChart = chart;
             
-            // Sinyal noktalari: Lips/Teeth kesisimi + alligator siralamasi
-            const buyPoints = [];
-            const sellPoints = [];
-            for (let i = 1; i < bars.length; i++) {
-                const prev = bars[i - 1];
-                const curr = bars[i];
-                if (!curr.lips || !curr.teeth || !curr.jaw || !prev.lips || !prev.teeth) continue;
-                
-                const lipsCrossUp = prev.lips <= prev.teeth && curr.lips > curr.teeth;
-                const lipsCrossDown = prev.lips >= prev.teeth && curr.lips < curr.teeth;
-                const alignedUp = curr.lips > curr.teeth && curr.teeth > curr.jaw;
-                const alignedDown = curr.lips < curr.teeth && curr.teeth < curr.jaw;
-                
-                if (lipsCrossUp && alignedUp) {
-                    buyPoints.push({ x: i, y: curr.low * 0.998 });
-                } else if (lipsCrossDown && alignedDown) {
-                    sellPoints.push({ x: i, y: curr.high * 1.002 });
+            const candleSeries = chart.addCandlestickSeries({
+                upColor: '#10b981',
+                downColor: '#ef4444',
+                borderUpColor: '#10b981',
+                borderDownColor: '#ef4444',
+                wickUpColor: '#10b981',
+                wickDownColor: '#ef4444',
+            });
+            
+            const ohlc = bars.map(b => {
+                const ts = b.timestamp;
+                let time;
+                if (typeof ts === 'number') {
+                    // ms veya s cinsinden timestamp
+                    const sec = ts > 1e10 ? Math.floor(ts / 1000) : ts;
+                    time = { year: new Date(sec * 1000).getFullYear(), month: new Date(sec * 1000).getMonth() + 1, day: new Date(sec * 1000).getDate(), hour: new Date(sec * 1000).getHours(), minute: new Date(sec * 1000).getMinutes() };
+                } else if (ts && ts.includes && ts.includes(' ')) {
+                    const [d, t] = ts.split(' ');
+                    const [yy, mm, dd] = d.split('-');
+                    const [hh, mn] = t.split(':');
+                    time = { year: parseInt(yy), month: parseInt(mm), day: parseInt(dd), hour: parseInt(hh), minute: parseInt(mn) };
+                } else {
+                    const d = new Date(ts);
+                    time = { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours(), minute: d.getMinutes() };
                 }
+                return {
+                    time: time,
+                    open: b.open ?? b.close,
+                    high: b.high ?? b.close,
+                    low: b.low ?? b.close,
+                    close: b.close
+                };
+            }).sort((a, b) => {
+                const ta = new Date(a.time.year, a.time.month - 1, a.time.day, a.time.hour, a.time.minute).getTime();
+                const tb = new Date(b.time.year, b.time.month - 1, b.time.day, b.time.hour, b.time.minute).getTime();
+                return ta - tb;
+            });
+            candleSeries.setData(ohlc);
+            
+            const jawLine = chart.addLineSeries({ color: '#3b82f6', lineWidth: 2, title: 'Jaw (13)' });
+            const teethLine = chart.addLineSeries({ color: '#ef4444', lineWidth: 2, title: 'Teeth (8)' });
+            const lipsLine = chart.addLineSeries({ color: '#10b981', lineWidth: 2, title: 'Lips (5)' });
+            
+            jawLine.setData(ohlc.map((b, i) => ({ time: b.time, value: bars[i].jaw })).filter(x => x.value != null));
+            teethLine.setData(ohlc.map((b, i) => ({ time: b.time, value: bars[i].teeth })).filter(x => x.value != null));
+            lipsLine.setData(ohlc.map((b, i) => ({ time: b.time, value: bars[i].lips })).filter(x => x.value != null));
+            
+            // Sinyal oklari (markers)
+            const markers = [];
+            if (signalsHistory && signalsHistory.length > 0) {
+                const visibleSignals = signalsHistory.filter(s => {
+                    const st = new Date(s.timestamp).getTime();
+                    const firstTime = ohlc.length > 0 ? new Date(ohlc[0].time.year, ohlc[0].time.month - 1, ohlc[0].time.day, ohlc[0].time.hour, ohlc[0].time.minute).getTime() : 0;
+                    const lastTime = ohlc.length > 0 ? new Date(ohlc[ohlc.length - 1].time.year, ohlc[ohlc.length - 1].time.month - 1, ohlc[ohlc.length - 1].time.day, ohlc[ohlc.length - 1].time.hour, ohlc[ohlc.length - 1].time.minute).getTime() : Infinity;
+                    return st >= firstTime && st <= lastTime;
+                });
+                
+                visibleSignals.forEach(s => {
+                    const d = new Date(s.timestamp);
+                    const time = { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours(), minute: d.getMinutes() };
+                    const bar = ohlc.find(b => b.time.year === time.year && b.time.month === time.month && b.time.day === time.day && b.time.hour === time.hour && b.time.minute === time.minute);
+                    if (bar) {
+                        markers.push({
+                            time: time,
+                            position: s.signal === 'AL' ? 'belowBar' : 'aboveBar',
+                            color: s.signal === 'AL' ? '#10b981' : '#ef4444',
+                            shape: s.signal === 'AL' ? 'arrowUp' : 'arrowDown',
+                            text: s.signal,
+                            size: 2
+                        });
+                    }
+                });
             }
             
-            mzChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        { label: 'Fiyat', data: closes, borderColor: '#f8fafc', borderWidth: 2, pointRadius: 0, tension: 0.3 },
-                        { label: 'Jaw (13)', data: jaws, borderColor: '#3b82f6', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
-                        { label: 'Teeth (8)', data: teeths, borderColor: '#ef4444', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
-                        { label: 'Lips (5)', data: lipss, borderColor: '#10b981', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
-                        { 
-                            label: 'AL', data: labels.map((_, i) => {
-                                const p = buyPoints.find(p => p.x === i);
-                                return p ? p.y : null;
-                            }), backgroundColor: '#10b981', borderColor: '#10b981', pointStyle: 'triangle', 
-                            pointRadius: 8, pointHoverRadius: 10, showLine: false
-                        },
-                        { 
-                            label: 'SAT', data: labels.map((_, i) => {
-                                const p = sellPoints.find(p => p.x === i);
-                                return p ? p.y : null;
-                            }), backgroundColor: '#ef4444', borderColor: '#ef4444', pointStyle: 'triangle', 
-                            pointRadius: 8, pointHoverRadius: 10, showLine: false, rotation: 180
-                        },
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { labels: { color: '#94a3b8', font: { size: 11 }, usePointStyle: true } }
-                    },
-                    scales: {
-                        x: { ticks: { color: '#64748b', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: 'rgba(148,163,184,0.1)' } },
-                        y: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: 'rgba(148,163,184,0.1)' } }
-                    }
-                }
-            });
+            if (markers.length > 0) {
+                candleSeries.setMarkers(markers);
+            }
+            
+            chart.timeScale().fitContent();
         }
         
-        async function checkMzTrigger() {
+        async function checkMzTrigger(silent = false) {
             const manualPrice = document.getElementById('manualPrice')?.value;
             const symbol = document.getElementById('mzSymbol')?.value || 'GMSTR.IS';
-            if (!manualPrice) {
+            if (!manualPrice && symbol === 'GMSTR.IS') {
                 alert('Sinyal kontrolü için lütfen "Manuel fiyat" inputuna bir fiyat girin (örn. 547).');
                 return;
             }
@@ -1811,7 +1827,9 @@
             button.textContent = 'Kontrol Ediliyor...';
             
             try {
-                const payload = { manual_price: parseFloat(manualPrice), symbol: symbol };
+                const payload = {};
+                if (manualPrice) payload.manual_price = parseFloat(manualPrice);
+                payload.symbol = symbol;
                 const response = await fetch('/api/mztrigger/check', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1819,21 +1837,84 @@
                 });
                 const result = await response.json();
                 
-                if (result.error) {
+                if (result.error && !silent) {
                     alert('MZTrigger hatası: ' + result.error);
-                } else if (result.signal === 'AL' || result.signal === 'SAT') {
-                    alert(`MZTrigger sinyali: ${result.signal}\nFiyat: ₺${result.price?.toFixed(2)}\nHedef: ₺${result.target?.toFixed(2)}\nTelegram'a gönderildi!`);
+                } else if ((result.signal === 'AL' || result.signal === 'SAT') && !silent) {
+                    const cur = symbol === 'KAGUSDT' ? '$' : '₺';
+                    alert(`MZTrigger sinyali: ${result.signal}\nFiyat: ${cur}${result.price?.toFixed(2)}\nHedef: ${cur}${result.target?.toFixed(2)}\nTelegram'a gönderildi!`);
                     loadMzTrigger();
-                } else {
+                } else if (!silent) {
                     alert('MZTrigger: Şu an sinyal yok (' + (result.alligator_state || 'BEKLE') + ')');
                     loadMzTrigger();
                 }
+                
+                // Oto kontrol: sinyal degisince sayfayi guncelle
+                if (result.signal && result.signal !== mzLastSignal && (result.signal === 'AL' || result.signal === 'SAT')) {
+                    mzLastSignal = result.signal;
+                    if (!silent) loadMzTrigger();
+                }
             } catch (error) {
                 console.error('MZTrigger kontrol hatası:', error);
-                alert('MZTrigger kontrol edilemedi');
+                if (!silent) alert('MZTrigger kontrol edilemedi');
             } finally {
                 button.disabled = false;
                 button.textContent = 'Sinyal Kontrol Et';
+            }
+        }
+        
+        function toggleMzAutoCheck() {
+            const btn = document.getElementById('mzAutoBtn');
+            if (mzAutoCheckInterval) {
+                clearInterval(mzAutoCheckInterval);
+                mzAutoCheckInterval = null;
+                btn.textContent = '🔔 Oto: KAPALI';
+                btn.style.background = 'linear-gradient(135deg, #8b5cf6, #7c3aed)';
+            } else {
+                mzAutoCheckInterval = setInterval(autoCheckMzTrigger, 5 * 60 * 1000); // 5 dk
+                btn.textContent = '🔔 Oto: AÇIK (5dk)';
+                btn.style.background = 'linear-gradient(135deg, #10b981, #059669)';
+                autoCheckMzTrigger();
+            }
+        }
+        
+        async function autoCheckMzTrigger() {
+            const symbol = document.getElementById('mzSymbol')?.value || 'GMSTR.IS';
+            if (symbol === 'GMSTR.IS') {
+                await checkMzTrigger(true);
+                return;
+            }
+            // KAGUSDT: tarayicidan CoinGecko verisi cek ve hesaplat, notify=true ile Telegram gonder
+            try {
+                const response = await fetch('https://api.coingecko.com/api/v3/coins/kinesis-silver/market_chart?vs_currency=usd&days=30');
+                if (!response.ok) return;
+                const cgData = await response.json();
+                const prices = cgData.prices || [];
+                const volumes = cgData.total_volumes || [];
+                if (prices.length < 30) return;
+                const bars = prices.map((p, i) => {
+                    const close = p[1];
+                    const open = i > 0 ? prices[i - 1][1] : close;
+                    return {
+                        timestamp: p[0],
+                        open: open,
+                        high: Math.max(open, close) * 1.003,
+                        low: Math.min(open, close) * 0.997,
+                        close: close,
+                        volume: volumes[i] ? volumes[i][1] : 0
+                    };
+                });
+                const calcResp = await fetch('/api/mztrigger/calc', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: symbol, bars: bars, notify: true })
+                });
+                const data = await calcResp.json();
+                if (data.signal && data.signal !== mzLastSignal && (data.signal === 'AL' || data.signal === 'SAT')) {
+                    mzLastSignal = data.signal;
+                    renderMzTrigger(data, null, symbol);
+                }
+            } catch (e) {
+                console.error('Oto kontrol hatası:', e);
             }
         }
         
