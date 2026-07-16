@@ -2620,12 +2620,11 @@ class MZTriggerIndicator:
             }
         """
         if df is None:
-            # Once yfinance dene
-            df = self.ps.fetch_gmstr_data(period="3mo", interval="1h")
-            # yfinance basarisiz ise direct API dene
+            # yfinance Render'da cok yavas/timeout - direkt Yahoo API dene
+            df = self._fetch_yahoo_direct(period="3mo", interval="1h")
             if df is None or len(df) < 30:
-                logger.info("MZTrigger: yfinance basarisiz, direct Yahoo API deneniyor")
-                df = self._fetch_yahoo_direct(period="3mo", interval="1h")
+                # yfinance dene (local'de calisir)
+                df = self.ps.fetch_gmstr_data(period="3mo", interval="1h")
         
         if df is None or len(df) < 30:
             # Son care: manuel fiyat ile sentetik veri
