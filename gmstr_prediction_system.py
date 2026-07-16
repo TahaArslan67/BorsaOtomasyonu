@@ -2701,10 +2701,14 @@ class MZTriggerIndicator:
         """
         np.random.seed(42)
         
-        # Uzunluk paylari
-        n_base = 80
-        n_cross = 40
-        n_confirm = 40
+        # Uzunluk paylari - istenen bar sayisina gore olcekle
+        n_confirm = max(40, int(bars * 0.12))
+        n_cross = max(30, int(bars * 0.08))
+        n_base = bars - n_cross - n_confirm
+        if n_base < 20:
+            n_base = bars // 2
+            n_cross = bars // 4
+            n_confirm = bars - n_base - n_cross
         
         base = np.zeros(n_base)
         if demo_signal == 'AL' or demo_signal is None:
@@ -2834,7 +2838,7 @@ class MZTriggerIndicator:
             # Son care: manuel fiyat ile sentetik veri (demo modu)
             if manual_price and isinstance(manual_price, (int, float)) and manual_price > 0:
                 logger.info(f"MZTrigger: veri yok, manuel fiyat ile demo veri: {manual_price}")
-                df = self._generate_demo_data(float(manual_price), demo_signal)
+                df = self._generate_demo_data(float(manual_price), demo_signal, bars=720)
                 if df is None or len(df) < 30:
                     return None
             else:
@@ -2903,16 +2907,23 @@ class MZTriggerIndicator:
                 stop = current_price + current_atr * 0.5
                 demo_override = True
 
-        # Son 1 aylik tum sinyalleri tespit et (son 50 bardan oncekiler dahil)
+        # Son 1 aylik tum sinyalleri tespit et
         all_signals = self._scan_signals(df, jaw, teeth, lips)
-        recent_signals = [s for s in all_signals if s['index'] >= len(df) - 50]
         
-        # Son 50 bar icin grafik verisi
+        # Grafikte son 1 aylik veriyi goster (max 720 saatlik bar)
+        chart_bar_count = min(720, len(df))
+        chart_start_idx = len(df) - chart_bar_count
+        recent_signals = [s for s in all_signals if s['index'] >= chart_start_idx]
+        
+        # Grafik verisi (timestamp, ohlc, alligator, sinyal)
         bars = []
-        for i in range(-50, 0):
+        for i in range(-chart_bar_count, 0):
             idx = df.index[i]
             bars.append({
                 'timestamp': idx.strftime('%Y-%m-%d %H:%M:%S') if hasattr(idx, 'strftime') else str(idx),
+                'open': float(df['Open'].iloc[i]) if 'Open' in df.columns else float(df['Close'].iloc[i]),
+                'high': float(df['High'].iloc[i]) if 'High' in df.columns else float(df['Close'].iloc[i]),
+                'low': float(df['Low'].iloc[i]) if 'Low' in df.columns else float(df['Close'].iloc[i]),
                 'close': float(df['Close'].iloc[i]),
                 'jaw': float(jaw.iloc[i]) if not pd.isna(jaw.iloc[i]) else None,
                 'teeth': float(teeth.iloc[i]) if not pd.isna(teeth.iloc[i]) else None,
