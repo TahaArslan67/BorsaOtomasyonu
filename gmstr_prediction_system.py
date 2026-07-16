@@ -2608,41 +2608,48 @@ class MZTriggerIndicator:
             logger.debug(f"Yahoo direct API hatasi: {e}")
             return None
 
-    def _generate_demo_data(self, current_price, demo_signal=None, bars=120):
+    def _generate_demo_data(self, current_price, demo_signal=None, bars=160):
         """Demo modu: Manuel fiyat etrafinda AL/SAT sinyali ureten sentetik veri.
         
         demo_signal: 'AL' veya 'SAT' - belirtilirse son bolumde o sinyali zorlar.
         """
         np.random.seed(42)
         
-        # Son 25 bar icin trend olustur (AL veya SAT)
-        if demo_signal == 'AL':
-            trend = np.linspace(-0.05, 0.03, bars)  # Asagi sonra yukari
-        elif demo_signal == 'SAT':
-            trend = np.linspace(0.05, -0.03, bars)  # Yukari sonra asagi
+        # Uzunluk paylari
+        n_base = 80
+        n_cross = 40
+        n_confirm = 40
+        
+        base = np.zeros(n_base)
+        if demo_signal == 'AL' or demo_signal is None:
+            # Once yatay/asagi sonra keskin yukari
+            cross = np.linspace(0, 0.04, n_cross)
+            confirm = np.linspace(0.04, 0.07, n_confirm)
+            if demo_signal == 'SAT':
+                # SAT icin tersi
+                cross = np.linspace(0, -0.04, n_cross)
+                confirm = np.linspace(-0.04, -0.07, n_confirm)
         else:
-            # Rastgele sec
-            demo_signal = 'AL' if np.random.random() > 0.5 else 'SAT'
-            if demo_signal == 'AL':
-                trend = np.linspace(-0.05, 0.03, bars)
-            else:
-                trend = np.linspace(0.05, -0.03, bars)
+            cross = np.linspace(0, -0.04, n_cross)
+            confirm = np.linspace(-0.04, -0.07, n_confirm)
+        
+        trend = np.concatenate([base, cross, confirm])
         
         # Gurultu ekle
-        noise = np.cumsum(np.random.normal(0, 0.003, bars))
-        close = current_price * (1 + trend + noise * 0.5)
+        noise = np.cumsum(np.random.normal(0, 0.002, bars))
+        close = current_price * (1 + trend + noise * 0.3)
         
         # Mumlari olustur
         opens = close.copy()
         opens[1:] = close[:-1]
-        opens[0] = close[0] * (1 + np.random.normal(0, 0.002))
+        opens[0] = close[0] * (1 + np.random.normal(0, 0.001))
         
         highs = []
         lows = []
         for i in range(bars):
             o, c = opens[i], close[i]
             body = abs(c - o)
-            wick = body * (0.5 + np.random.random() * 1.0)
+            wick = body * (0.4 + np.random.random() * 0.8)
             if c >= o:
                 h = max(o, c) + wick
                 l = min(o, c) - wick * 0.3
@@ -2741,6 +2748,20 @@ class MZTriggerIndicator:
                 signal = "SAT"
                 target = current_price - current_atr
                 stop = current_price + current_atr * 0.5
+
+        # Demo modu: alligator uygun siralamadaysa istenen sinyali zorla
+        demo_override = False
+        if demo_signal and demo_signal in ('AL', 'SAT'):
+            if demo_signal == 'AL' and current_lips > current_teeth > current_jaw:
+                signal = 'AL'
+                target = current_price + current_atr
+                stop = current_price - current_atr * 0.5
+                demo_override = True
+            elif demo_signal == 'SAT' and current_lips < current_teeth < current_jaw:
+                signal = 'SAT'
+                target = current_price - current_atr
+                stop = current_price + current_atr * 0.5
+                demo_override = True
 
         # Son 50 bar icin grafik verisi
         bars = []
