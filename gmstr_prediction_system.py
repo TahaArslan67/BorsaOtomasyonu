@@ -2793,10 +2793,10 @@ class MZTriggerIndicator:
             logger.error(f"MZTrigger gecmis hatasi: {e}")
             return []
 
-    def check_and_notify(self):
+    def check_and_notify(self, manual_price=None):
         """Mevcut sinyali kontrol et, AL/SAT ise Telegram'a bildir ve DB'ye kaydet."""
         try:
-            result = self.calculate()
+            result = self.calculate(manual_price=manual_price)
             if result is None:
                 return None
 
@@ -3215,13 +3215,16 @@ def get_mztrigger_history():
 def check_mztrigger():
     """MZTrigger manuel kontrol - sinyal varsa Telegram'a gonder"""
     try:
-        result = mztrigger.check_and_notify()
+        data = request.get_json() or {}
+        manual_price = data.get('manual_price')
+        mp = float(manual_price) if manual_price else None
+        result = mztrigger.check_and_notify(manual_price=mp)
         if result is None:
-            return jsonify({'error': 'Veri cekilemedi'}), 500
+            return jsonify({'error': 'Veri cekilemedi', 'signal': 'BEKLE'}), 200
         return jsonify(result)
     except Exception as e:
         logger.error(f"MZTrigger check API hatasi: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e), 'signal': 'BEKLE'}), 500
 
 @app.route('/api/predict', methods=['POST'])
 def make_prediction():

@@ -1604,10 +1604,13 @@
             button.textContent = 'Kontrol Ediliyor...';
             
             try {
+                const manualPrice = document.getElementById('manualPrice')?.value;
+                const payload = {};
+                if (manualPrice) payload.manual_price = parseFloat(manualPrice);
                 const response = await fetch('/api/mztrigger/check', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: '{}'
+                    body: JSON.stringify(payload)
                 });
                 const result = await response.json();
                 
