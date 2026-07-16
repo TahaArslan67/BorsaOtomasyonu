@@ -1160,51 +1160,77 @@ class GMSTRPredictionSystem:
 
         return consensus, avg_conf, current_price, tf_details
 
-    def make_prediction(self, timeframe="4h"):
-        """Gelismis tahmin: ensemble + coklu zaman dilimi + ADX rejim + dinamik guven."""
+    def make_prediction(self, timeframe="4h", manual_price=None):
+        """Gelismis tahmin: ensemble + coklu zaman dilimi + ADX rejim + dinamik guven.
+        manual_price: Verilirse yfinance verisi yerine bu fiyat kullanilir."""
         try:
-            if self.model is None:
-                if not self.load_model():
-                    logger.error("Model bulunamadi, once egitim yapin")
-                    return None
-
-            # 1. Ensemble ML tahmini
+            # 1. Veri cek
             gmstr_data = self.fetch_gmstr_data(period="2y")
             market_data = self.fetch_market_data()
 
-            if gmstr_data is None:
-                logger.error("GMSTR verisi cekilemedi")
-                return None
-
-            X = self.create_features(gmstr_data, market_data)
-            if X is None or len(X) == 0:
-                logger.error("Ozellikler olusturulamadi")
-                return None
-
-            latest_features = X[-1].reshape(1, -1)
-            current_price = gmstr_data['Close'].iloc[-1]
-
-            # PCA ve Scaler uygula (varsa)
-            if isinstance(self.model, dict):
-                if self.model.get('scaler'):
-                    latest_features = self.model['scaler'].transform(latest_features)
-                    logger.debug("Scaler uygulandi")
-                if self.model.get('pca'):
-                    latest_features = self.model['pca'].transform(latest_features)
-                    logger.debug(f"PCA uygulandi: {latest_features.shape[1]} bilesen")
-
-            # LGBM tahmin
-            if isinstance(self.model, dict) and 'lgb' in self.model:
-                lgb_proba = self.model['lgb'].predict_proba(latest_features)[0][1]
-                ml_prediction = 1 if lgb_proba > 0.5 else 0
-                ml_confidence = max(lgb_proba, 1 - lgb_proba)
-                logger.debug(f"LGBM proba: {lgb_proba:.4f}")
+            if gmstr_data is not None and len(gmstr_data) >= 50:
+                current_price = gmstr_data['Close'].iloc[-1]
+                if manual_price and isinstance(manual_price, (int, float)) and manual_price > 0:
+                    current_price = float(manual_price)
+                    logger.info(f"Manuel fiyat kullaniliyor: {current_price:.2f}")
+            elif manual_price and isinstance(manual_price, (int, float)) and manual_price > 0:
+                # yfinance basarisiz ama manuel fiyat var
+                current_price = float(manual_price)
+                logger.info(f"yfinance basarisiz, manuel fiyat kullaniliyor: {current_price:.2f}")
+                # Minimal sentetik veri olustur
+                dates = pd.date_range(end=datetime.now(), periods=100, freq='1h')
+                gmstr_data = pd.DataFrame({
+                    'Open': [current_price] * 100,
+                    'High': [current_price * 1.01] * 100,
+                    'Low': [current_price * 0.99] * 100,
+                    'Close': [current_price] * 100,
+                    'Volume': [100000] * 100
+                }, index=dates)
+                market_data = None
             else:
-                ml_prediction = self.model.predict(latest_features)[0]
-                probability = self.model.predict_proba(latest_features)[0]
-                ml_confidence = max(probability)
+                logger.error("GMSTR verisi cekilemedi ve manuel fiyat verilmedi")
+                return None
 
-            # 2. Coklu zaman dilimi consensus
+            # 2. Model yukle ve ML tahmini yap
+            ml_prediction = None
+            ml_confidence = 0.5
+            if self.model is None:
+                if not self.load_model():
+                    logger.warning("Model bulunamadi, sadece teknik analiz kullanilacak")
+                else:
+                    logger.info("Model yuklendi, ML tahmini yapilacak")
+
+            if self.model is not None and gmstr_data is not None and len(gmstr_data) >= 50:
+                try:
+                    X = self.create_features(gmstr_data, market_data)
+                    if X is not None and len(X) > 0:
+                        latest_features = X[-1].reshape(1, -1)
+
+                        # PCA ve Scaler uygula (varsa)
+                        if isinstance(self.model, dict):
+                            if self.model.get('scaler'):
+                                latest_features = self.model['scaler'].transform(latest_features)
+                            if self.model.get('pca'):
+                                latest_features = self.model['pca'].transform(latest_features)
+
+                        # LGBM tahmin
+                        if isinstance(self.model, dict) and 'lgb' in self.model:
+                            lgb_proba = self.model['lgb'].predict_proba(latest_features)[0][1]
+                            ml_prediction = 1 if lgb_proba > 0.5 else 0
+                            ml_confidence = max(lgb_proba, 1 - lgb_proba)
+                            logger.debug(f"LGBM proba: {lgb_proba:.4f}")
+                        else:
+                            ml_prediction = self.model.predict(latest_features)[0]
+                            probability = self.model.predict_proba(latest_features)[0]
+                            ml_confidence = max(probability)
+                    else:
+                        logger.warning("Ozellikler olusturulamadi, sadece teknik analiz")
+                except Exception as ml_err:
+                    logger.warning(f"ML tahmin hatasi: {ml_err}, sadece teknik analiz")
+            else:
+                logger.info("Model veya veri yetersiz, sadece teknik analiz kullanilacak")
+
+            # 3. Coklu zaman dilimi consensus
             consensus, tf_conf, _, tf_details = self._multi_timeframe_consensus()
             consensus_str = f"{consensus:.2f}" if consensus is not None else "N/A"
             tf_conf_str = f"{tf_conf:.3f}" if tf_conf is not None else "N/A"
@@ -1216,14 +1242,20 @@ class GMSTRPredictionSystem:
             logger.info(f"ADX: {adx_value:.1f} | Rejim: {regime}")
 
             # 4. Final sinyal: ML + consensus birlestir
-            if consensus is not None:
+            if ml_prediction is not None and consensus is not None:
                 ml_score = ml_confidence if ml_prediction == 1 else -ml_confidence
                 combined_score = 0.6 * ml_score + 0.4 * consensus
                 final_prediction = 1 if combined_score > 0 else 0
                 combined_confidence = abs(combined_score)
-            else:
+            elif ml_prediction is not None:
                 final_prediction = ml_prediction
                 combined_confidence = ml_confidence
+            elif consensus is not None:
+                final_prediction = 1 if consensus > 0 else 0
+                combined_confidence = abs(consensus)
+            else:
+                final_prediction = None
+                combined_confidence = 0.5
 
             # 5. Haber analizi filtresi
             news_mult, news_score = 1.0, None
@@ -1344,6 +1376,10 @@ class GMSTRPredictionSystem:
                 direction = "HOLD"
                 target_price = current_price
                 logger.info(f"Guven dusuk ({combined_confidence:.3f} < {base_threshold}), HOLD")
+            elif final_prediction is None:
+                direction = "HOLD"
+                target_price = current_price
+                logger.info("Final prediction None, HOLD")
             else:
                 if final_prediction == 1:
                     target_price = current_price * 1.015
@@ -2814,7 +2850,7 @@ def make_prediction():
     timeframe = data.get('timeframe', '4h')
     manual_price = data.get('manual_price')
     
-    prediction = prediction_system.make_prediction(timeframe)
+    prediction = prediction_system.make_prediction(timeframe, manual_price=manual_price)
     
     if prediction:
         # Manuel fiyat varsa uygula
@@ -2822,15 +2858,16 @@ def make_prediction():
             prediction['display_price'] = float(manual_price)
             prediction['note'] = f"Manuel fiyat: ₺{manual_price:.2f} (tahmin bu degere gore)"
         
-        # Geçmişe kaydet
+        # Geçmişe kaydet (borsa kapaliyken de kaydetmek icin historical kullan)
         try:
-            prediction_system.save_prediction(
+            prediction_system.save_historical_prediction(
+                datetime.now(),
                 prediction.get('current_price', 0),
                 prediction.get('direction', 'HOLD'),
                 prediction.get('target_price', 0),
                 prediction.get('confidence', 0.5),
                 timeframe,
-                None
+                'normal'
             )
         except Exception as e:
             logger.warning(f"Tahmin kaydetme hatasi: {e}")

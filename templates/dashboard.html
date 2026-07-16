@@ -1479,7 +1479,11 @@
                 const result = await response.json();
                 
                 if (result.error) {
-                    alert('Tahmin yapılamadı: ' + result.error);
+                    if (!manualPrice) {
+                        alert('Tahmin yapılamadı: ' + result.error + '\n\nİpucu: Manuel fiyat girerek tahmin yapabilirsiniz (örn. 547).');
+                    } else {
+                        alert('Tahmin yapılamadı: ' + result.error);
+                    }
                 } else {
                     alert(`Tahmin yapıldı: ${result.direction} - Hedef: ₺${result.target_price.toFixed(2)}`);
                     loadPredictions(currentChartDays);
