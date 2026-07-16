@@ -2640,6 +2640,60 @@ class MZTriggerIndicator:
             logger.debug(f"Binance API hatasi ({symbol}): {e}")
             return None
 
+    def _fetch_coingecko(self, symbol="BTCUSDT", days=30):
+        """CoinGecko market chart API - Render'da da calisir, kripto icin."""
+        try:
+            coin_map = {
+                'BTCUSDT': 'bitcoin',
+                'ETHUSDT': 'ethereum',
+                'SOLUSDT': 'solana',
+                'BNBUSDT': 'binancecoin',
+                'ADAUSDT': 'cardano',
+                'XRPUSDT': 'ripple',
+                'DOGEUSDT': 'dogecoin',
+                'GMSTR.IS': None  # CoinGecko'da yok
+            }
+            coin_id = coin_map.get(symbol)
+            if not coin_id:
+                return None
+            
+            url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days={days}"
+            resp = requests.get(url, timeout=20)
+            if resp.status_code != 200:
+                logger.debug(f"CoinGecko {coin_id}: status {resp.status_code}")
+                return None
+            data = resp.json()
+            prices = data.get('prices', [])
+            volumes = data.get('total_volumes', [])
+            if not prices or len(prices) < 30:
+                return None
+            
+            import pandas as pd_inner
+            rows = []
+            for i, p in enumerate(prices):
+                ts = pd_inner.Timestamp.fromtimestamp(int(p[0]) / 1000)
+                close = float(p[1])
+                open_price = float(prices[i-1][1]) if i > 0 else close
+                # CoinGecko sadece fiyat verir, OHLC yaklasik olustur
+                high = max(open_price, close) * 1.003
+                low = min(open_price, close) * 0.997
+                vol = float(volumes[i][1]) if i < len(volumes) else 0
+                rows.append({
+                    'timestamp': ts,
+                    'Open': open_price,
+                    'High': high,
+                    'Low': low,
+                    'Close': close,
+                    'Volume': vol
+                })
+            
+            df = pd_inner.DataFrame(rows).set_index('timestamp')
+            df = df.dropna()
+            return df if len(df) > 0 else None
+        except Exception as e:
+            logger.debug(f"CoinGecko API hatasi ({symbol}): {e}")
+            return None
+
     def _generate_demo_data(self, current_price, demo_signal=None, bars=160):
         """Demo modu: Manuel fiyat etrafinda AL/SAT sinyali ureten sentetik veri.
         
@@ -2767,12 +2821,14 @@ class MZTriggerIndicator:
         self.current_symbol = symbol
         
         if df is None:
-            # Sadece direct Yahoo API - yfinance Render'da timeout'a takiliyor
+            # 1) Direct Yahoo API
             df = self._fetch_yahoo_direct(symbol=symbol, period="1mo", interval="1h")
-            # Yahoo basarisizsa Binance dene (ozellikle kripto icin)
-            if df is None or len(df) < 30:
-                if symbol.endswith('USDT'):
-                    df = self._fetch_binance_klines(symbol=symbol, interval="1h", limit=720)
+            # 2) Yahoo basarisizsa CoinGecko dene (Render'da calisir, kripto icin)
+            if (df is None or len(df) < 30) and symbol.endswith('USDT'):
+                df = self._fetch_coingecko(symbol=symbol, days=30)
+            # 3) CoinGecko basarisizsa Binance dene
+            if (df is None or len(df) < 30) and symbol.endswith('USDT'):
+                df = self._fetch_binance_klines(symbol=symbol, interval="1h", limit=720)
         
         if df is None or len(df) < 30:
             # Son care: manuel fiyat ile sentetik veri (demo modu)
