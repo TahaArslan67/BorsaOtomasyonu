@@ -788,6 +788,7 @@
                                 <option value="BTCUSDT">BTC/USDT</option>
                                 <option value="ETHUSDT">ETH/USDT</option>
                             </select>
+                            <button class="btn" onclick="loadRealData()" id="mzRealBtn" style="background: linear-gradient(135deg, #3b82f6, #2563eb);">Gerçek Veri Çek</button>
                             <button class="btn" onclick="checkMzTrigger()" id="mzCheckBtn">Sinyal Kontrol Et</button>
                             <button class="btn" onclick="demoMzTrigger('AL')" id="mzDemoAlBtn" style="background: linear-gradient(135deg, #10b981, #059669);">▲ Demo AL</button>
                             <button class="btn" onclick="demoMzTrigger('SAT')" id="mzDemoSatBtn" style="background: linear-gradient(135deg, #ef4444, #dc2626);">▼ Demo SAT</button>
@@ -795,7 +796,7 @@
                     </div>
                     <div id="mzTriggerContainer" style="padding: 16px;">
                         <div style="background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px; color: #fbbf24; font-size: 13px;">
-                            <b>Bilgi:</b> Sembol seçin (Silver: XAGUSD=X, BTC/USDT). Gerçek veri yoksa "Manuel fiyat" girin ve Demo AL/SAT kullanın.
+                            <b>Bilgi:</b> Render ücretsiz sunucuda Yahoo/Binance engellendiği için "Gerçek Veri Çek" butonu veriyi tarayıcınızdan çeker. BTC/ETH için çalışır. Gümüş için API key gerekir.
                         </div>
                         <div class="loading"><div class="spinner"></div><div>MZTrigger yükleniyor...</div></div>
                     </div>
@@ -1532,6 +1533,77 @@
                 'ETHUSDT': 'Ethereum / USDT'
             };
             return map[symbol] || symbol;
+        }
+        
+        async function loadRealData() {
+            const symbol = document.getElementById('mzSymbol')?.value || 'GMSTR.IS';
+            const container = document.getElementById('mzTriggerContainer');
+            
+            if (!symbol.endsWith('USDT')) {
+                container.innerHTML = '<div style="padding: 20px; color: var(--text-secondary);">Bu sembol için tarayıcıdan ücretsiz gerçek veri mevcut değil. BTC/ETH seçin veya manuel fiyatla Demo AL/SAT kullanın.</div>';
+                return;
+            }
+            
+            const btn = document.getElementById('mzRealBtn');
+            btn.disabled = true;
+            btn.textContent = 'Veri Çekiliyor...';
+            
+            try {
+                const coinMap = {
+                    'BTCUSDT': 'bitcoin',
+                    'ETHUSDT': 'ethereum',
+                    'SOLUSDT': 'solana',
+                    'BNBUSDT': 'binancecoin',
+                    'ADAUSDT': 'cardano',
+                    'XRPUSDT': 'ripple',
+                    'DOGEUSDT': 'dogecoin'
+                };
+                const coinId = coinMap[symbol];
+                if (!coinId) {
+                    throw new Error('CoinGecko desteği yok: ' + symbol);
+                }
+                
+                const response = await fetch(`https://api.coingecko.com/api/v3/coins/${coinId}/market_chart?vs_currency=usd&days=30`);
+                if (!response.ok) {
+                    throw new Error('CoinGecko hatası: ' + response.status);
+                }
+                const cgData = await response.json();
+                const prices = cgData.prices || [];
+                const volumes = cgData.total_volumes || [];
+                
+                if (prices.length < 30) {
+                    throw new Error('Yetersiz veri');
+                }
+                
+                const bars = prices.map((p, i) => {
+                    const close = p[1];
+                    const open = i > 0 ? prices[i - 1][1] : close;
+                    const high = Math.max(open, close) * 1.003;
+                    const low = Math.min(open, close) * 0.997;
+                    return {
+                        timestamp: p[0],
+                        open: open,
+                        high: high,
+                        low: low,
+                        close: close,
+                        volume: volumes[i] ? volumes[i][1] : 0
+                    };
+                });
+                
+                const calcResp = await fetch('/api/mztrigger/calc', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: symbol, bars: bars })
+                });
+                const data = await calcResp.json();
+                renderMzTrigger(data, null, symbol);
+            } catch (error) {
+                console.error('Gerçek veri hatası:', error);
+                container.innerHTML = '<div style="padding: 20px; color: var(--text-secondary);">Gerçek veri çekilemedi: ' + error.message + '<br>BTC/ETH dışı sembollerde manuel fiyatla Demo AL/SAT kullanın.</div>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Gerçek Veri Çek';
+            }
         }
         
         function renderMzTrigger(data, demoMode = null, symbol = 'GMSTR.IS') {

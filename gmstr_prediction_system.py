@@ -3419,10 +3419,58 @@ def get_mztrigger():
         symbol = request.args.get('symbol', 'GMSTR.IS').strip().upper()
         result = mztrigger.calculate(manual_price=mp, demo_signal=demo_signal, symbol=symbol)
         if result is None:
-            return jsonify({'error': 'Veri cekilemedi', 'signal': 'BEKLE'}), 200
+            return jsonify({'error': 'Veri cekilemedi', 'signal': 'BEKLE', 'symbol': symbol}), 200
         return jsonify(result)
     except Exception as e:
         logger.error(f"MZTrigger API hatasi: {e}")
+        return jsonify({'error': str(e), 'signal': 'BEKLE'}), 500
+
+@app.route('/api/mztrigger/calc', methods=['POST'])
+def calc_mztrigger():
+    """Frontend'den gelen OHLC verisiyle MZTrigger sinyali hesapla (CORS/Render bypass)."""
+    try:
+        data = request.get_json() or {}
+        symbol = data.get('symbol', 'CUSTOM').strip().upper()
+        bars = data.get('bars', [])
+        demo_signal = data.get('demo')
+        
+        if not bars or len(bars) < 30:
+            return jsonify({'error': 'Yetersiz veri', 'signal': 'BEKLE'}), 200
+        
+        import pandas as pd_inner
+        df_rows = []
+        for b in bars:
+            ts = b.get('timestamp')
+            if not ts:
+                continue
+            try:
+                if isinstance(ts, (int, float)):
+                    dt = pd_inner.Timestamp.fromtimestamp(ts / 1000 if ts > 1e10 else ts)
+                else:
+                    dt = pd_inner.Timestamp(ts)
+                df_rows.append({
+                    'Open': float(b.get('open', b.get('Open', 0))),
+                    'High': float(b.get('high', b.get('High', 0))),
+                    'Low': float(b.get('low', b.get('Low', 0))),
+                    'Close': float(b.get('close', b.get('Close', 0))),
+                    'Volume': float(b.get('volume', b.get('Volume', 0))),
+                    'timestamp': dt
+                })
+            except Exception:
+                continue
+        
+        if len(df_rows) < 30:
+            return jsonify({'error': 'Yetersis veri', 'signal': 'BEKLE'}), 200
+        
+        df = pd_inner.DataFrame(df_rows).set_index('timestamp')
+        df = df.dropna()
+        
+        result = mztrigger.calculate(df=df, symbol=symbol, demo_signal=demo_signal)
+        if result is None:
+            return jsonify({'error': 'Hesaplanamadi', 'signal': 'BEKLE'}), 200
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"MZTrigger calc API hatasi: {e}")
         return jsonify({'error': str(e), 'signal': 'BEKLE'}), 500
 
 @app.route('/api/mztrigger/history')
