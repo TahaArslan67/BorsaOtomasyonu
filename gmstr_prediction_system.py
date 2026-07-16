@@ -2620,11 +2620,8 @@ class MZTriggerIndicator:
             }
         """
         if df is None:
-            # yfinance Render'da cok yavas/timeout - direkt Yahoo API dene
+            # Sadece direct Yahoo API - yfinance Render'da timeout'a takiliyor
             df = self._fetch_yahoo_direct(period="3mo", interval="1h")
-            if df is None or len(df) < 30:
-                # yfinance dene (local'de calisir)
-                df = self.ps.fetch_gmstr_data(period="3mo", interval="1h")
         
         if df is None or len(df) < 30:
             # Son care: manuel fiyat ile sentetik veri
