@@ -2569,14 +2569,15 @@ class MZTriggerIndicator:
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         return self._smma(tr, period)
 
-    def _fetch_yahoo_direct(self, period="3mo", interval="1h"):
-        """Direct Yahoo Finance API fallback - yfinance kutuphanesi calismadiginda."""
+    def _fetch_yahoo_direct(self, symbol="GMSTR.IS", period="3mo", interval="1h"):
+        """Direct Yahoo Finance API - sembol parametresi destekler."""
         try:
             session = requests.Session()
             session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
-            url = f"https://query2.finance.yahoo.com/v8/finance/chart/GMSTR.IS?range={period}&interval={interval}"
+            url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?range={period}&interval={interval}"
             resp = session.get(url, timeout=20)
             if resp.status_code != 200:
+                logger.debug(f"Yahoo API {symbol}: status {resp.status_code}")
                 return None
             data = resp.json()
             result = data.get('chart', {}).get('result', [])
@@ -2605,7 +2606,38 @@ class MZTriggerIndicator:
             df = df.dropna()
             return df if len(df) > 0 else None
         except Exception as e:
-            logger.debug(f"Yahoo direct API hatasi: {e}")
+            logger.debug(f"Yahoo direct API hatasi ({symbol}): {e}")
+            return None
+
+    def _fetch_binance_klines(self, symbol="BTCUSDT", interval="1h", limit=720):
+        """Binance kline API fallback - 7/24 calisir, kripto ve populer pariteler."""
+        try:
+            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+            resp = requests.get(url, timeout=15)
+            if resp.status_code != 200:
+                logger.debug(f"Binance API {symbol}: status {resp.status_code}")
+                return None
+            klines = resp.json()
+            if not klines or not isinstance(klines, list):
+                return None
+            
+            import pandas as pd_inner
+            data = []
+            for k in klines:
+                data.append({
+                    'timestamp': pd_inner.Timestamp.fromtimestamp(int(k[0]) / 1000),
+                    'Open': float(k[1]),
+                    'High': float(k[2]),
+                    'Low': float(k[3]),
+                    'Close': float(k[4]),
+                    'Volume': float(k[5])
+                })
+            
+            df = pd_inner.DataFrame(data).set_index('timestamp')
+            df = df.dropna()
+            return df if len(df) > 0 else None
+        except Exception as e:
+            logger.debug(f"Binance API hatasi ({symbol}): {e}")
             return None
 
     def _generate_demo_data(self, current_price, demo_signal=None, bars=160):
@@ -2675,20 +2707,72 @@ class MZTriggerIndicator:
         df = df.dropna()
         return df
 
-    def calculate(self, df=None, manual_price=None, demo_signal=None):
+    def _detect_signal(self, lips, teeth, jaw, idx):
+        """Belirli bir barda Lips/Teeth kesisimi + Alligator siralamasi var mi?"""
+        if idx < 1 or idx >= len(lips):
+            return None
+        curr_lips = lips.iloc[idx]
+        curr_teeth = teeth.iloc[idx]
+        curr_jaw = jaw.iloc[idx]
+        prev_lips = lips.iloc[idx - 1]
+        prev_teeth = teeth.iloc[idx - 1]
+        
+        if pd.isna(curr_lips) or pd.isna(curr_teeth) or pd.isna(curr_jaw):
+            return None
+        
+        if prev_lips <= prev_teeth and curr_lips > curr_teeth:
+            if curr_lips > curr_teeth > curr_jaw:
+                return 'AL'
+        if prev_lips >= prev_teeth and curr_lips < curr_teeth:
+            if curr_lips < curr_teeth < curr_jaw:
+                return 'SAT'
+        return None
+
+    def _scan_signals(self, df, jaw, teeth, lips, min_bars=30):
+        """Tum gecmis barlari tarayarak AL/SAT sinyallerini bul."""
+        signals = []
+        for i in range(min_bars, len(df)):
+            sig = self._detect_signal(lips, teeth, jaw, i)
+            if sig:
+                signals.append({
+                    'index': i,
+                    'timestamp': df.index[i],
+                    'signal': sig,
+                    'price': float(df['Close'].iloc[i]),
+                    'atr': float(self._atr(df.iloc[:i+1], 14).iloc[-1]) if i >= 14 else 0,
+                    'jaw': float(jaw.iloc[i]) if not pd.isna(jaw.iloc[i]) else 0,
+                    'teeth': float(teeth.iloc[i]) if not pd.isna(teeth.iloc[i]) else 0,
+                    'lips': float(lips.iloc[i]) if not pd.isna(lips.iloc[i]) else 0,
+                })
+        return signals
+
+    def calculate(self, df=None, manual_price=None, demo_signal=None, symbol="GMSTR.IS"):
         """Alligator cizgilerini ve sinyalleri hesapla.
+        
+        Args:
+            df: Onceden yuklenmis DataFrame
+            manual_price: Veri yoksa demo veri icin
+            demo_signal: 'AL' veya 'SAT' demo modu
+            symbol: Orn. GMSTR.IS, XAGUSD=X, GC=F, SI=F, BTCUSDT
         
         Returns:
             dict: {
                 'jaw': float, 'teeth': float, 'lips': float,
                 'atr': float, 'signal': 'AL'|'SAT'|'BEKLE',
                 'target': float, 'stop': float, 'price': float,
-                'alligator_state': str, 'bars': list
+                'alligator_state': str, 'bars': list,
+                'signals_history': list, 'symbol': str
             }
         """
+        self.current_symbol = symbol
+        
         if df is None:
             # Sadece direct Yahoo API - yfinance Render'da timeout'a takiliyor
-            df = self._fetch_yahoo_direct(period="3mo", interval="1h")
+            df = self._fetch_yahoo_direct(symbol=symbol, period="1mo", interval="1h")
+            # Yahoo basarisizsa Binance dene (ozellikle kripto icin)
+            if df is None or len(df) < 30:
+                if symbol.endswith('USDT'):
+                    df = self._fetch_binance_klines(symbol=symbol, interval="1h", limit=720)
         
         if df is None or len(df) < 30:
             # Son care: manuel fiyat ile sentetik veri (demo modu)
@@ -2763,6 +2847,10 @@ class MZTriggerIndicator:
                 stop = current_price + current_atr * 0.5
                 demo_override = True
 
+        # Son 1 aylik tum sinyalleri tespit et (son 50 bardan oncekiler dahil)
+        all_signals = self._scan_signals(df, jaw, teeth, lips)
+        recent_signals = [s for s in all_signals if s['index'] >= len(df) - 50]
+        
         # Son 50 bar icin grafik verisi
         bars = []
         for i in range(-50, 0):
@@ -2774,6 +2862,7 @@ class MZTriggerIndicator:
                 'teeth': float(teeth.iloc[i]) if not pd.isna(teeth.iloc[i]) else None,
                 'lips': float(lips.iloc[i]) if not pd.isna(lips.iloc[i]) else None,
                 'atr': float(atr.iloc[i]) if not pd.isna(atr.iloc[i]) else 0,
+                'signal': next((s['signal'] for s in recent_signals if s['index'] == len(df) + i), None)
             })
 
         return {
@@ -2787,6 +2876,9 @@ class MZTriggerIndicator:
             'stop': float(stop),
             'alligator_state': alligator_state,
             'bars': bars,
+            'signals_history': all_signals[-20:],  # Son 20 sinyal
+            'symbol': symbol,
+            'demo': bool(demo_override),
             'timestamp': datetime.now().isoformat(),
         }
 
@@ -3268,7 +3360,8 @@ def get_mztrigger():
         manual_price = request.args.get('manual_price')
         mp = float(manual_price) if manual_price else None
         demo_signal = request.args.get('demo')
-        result = mztrigger.calculate(manual_price=mp, demo_signal=demo_signal)
+        symbol = request.args.get('symbol', 'GMSTR.IS').strip().upper()
+        result = mztrigger.calculate(manual_price=mp, demo_signal=demo_signal, symbol=symbol)
         if result is None:
             return jsonify({'error': 'Veri cekilemedi', 'signal': 'BEKLE'}), 200
         return jsonify(result)
@@ -3295,7 +3388,8 @@ def check_mztrigger():
         manual_price = data.get('manual_price')
         mp = float(manual_price) if manual_price else None
         demo_signal = data.get('demo')
-        result = mztrigger.check_and_notify(manual_price=mp, demo_signal=demo_signal)
+        symbol = data.get('symbol', 'GMSTR.IS').strip().upper()
+        result = mztrigger.check_and_notify(manual_price=mp, demo_signal=demo_signal, symbol=symbol)
         if result is None:
             return jsonify({'error': 'Veri cekilemedi', 'signal': 'BEKLE'}), 200
         return jsonify(result)

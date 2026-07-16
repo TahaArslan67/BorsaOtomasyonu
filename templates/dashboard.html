@@ -778,7 +778,16 @@
                             <div class="card-title">🐊 MZTrigger v1.0</div>
                             <div class="card-subtitle">Bill Williams Alligator + ATR bazlı al/sat sinyalleri</div>
                         </div>
-                        <div class="btn-group">
+                        <div class="btn-group" style="flex-wrap: wrap; gap: 8px;">
+                            <select id="mzSymbol" class="input-field" style="width: 130px;" onchange="loadMzTrigger()">
+                                <option value="GMSTR.IS">GMSTR.IS</option>
+                                <option value="XAGUSD=X">Silver (XAG/USD)</option>
+                                <option value="SI=F">Gümüş Futures (SI=F)</option>
+                                <option value="GC=F">Altın Futures (GC=F)</option>
+                                <option value="SLV">SLV ETF</option>
+                                <option value="BTCUSDT">BTC/USDT</option>
+                                <option value="ETHUSDT">ETH/USDT</option>
+                            </select>
                             <button class="btn" onclick="checkMzTrigger()" id="mzCheckBtn">Sinyal Kontrol Et</button>
                             <button class="btn" onclick="demoMzTrigger('AL')" id="mzDemoAlBtn" style="background: linear-gradient(135deg, #10b981, #059669);">▲ Demo AL</button>
                             <button class="btn" onclick="demoMzTrigger('SAT')" id="mzDemoSatBtn" style="background: linear-gradient(135deg, #ef4444, #dc2626);">▼ Demo SAT</button>
@@ -786,7 +795,7 @@
                     </div>
                     <div id="mzTriggerContainer" style="padding: 16px;">
                         <div style="background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px; color: #fbbf24; font-size: 13px;">
-                            <b>Bilgi:</b> Render'da Yahoo Finance verisi çekilemiyor. Sağdaki "Manuel fiyat" inputuna fiyat girin ve "Demo AL/SAT" ile görseldeki gibi sinyalleri görün.
+                            <b>Bilgi:</b> Sembol seçin (Silver: XAGUSD=X, BTC/USDT). Gerçek veri yoksa "Manuel fiyat" girin ve Demo AL/SAT kullanın.
                         </div>
                         <div class="loading"><div class="spinner"></div><div>MZTrigger yükleniyor...</div></div>
                     </div>
@@ -1487,14 +1496,16 @@
         async function loadMzTrigger(demoMode = null) {
             try {
                 const manualPrice = document.getElementById('manualPrice')?.value;
+                const symbol = document.getElementById('mzSymbol')?.value || 'GMSTR.IS';
                 const params = new URLSearchParams();
                 if (manualPrice) params.set('manual_price', manualPrice);
                 if (demoMode) params.set('demo', demoMode);
+                params.set('symbol', symbol);
                 let url = '/api/mztrigger';
                 if (params.toString()) url += '?' + params.toString();
                 const response = await fetch(url);
                 const data = await response.json();
-                renderMzTrigger(data, demoMode);
+                renderMzTrigger(data, demoMode, symbol);
             } catch (error) {
                 console.error('MZTrigger yükleme hatası:', error);
                 document.getElementById('mzTriggerContainer').innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">MZTrigger verisi yüklenemedi</div>';
@@ -1510,7 +1521,20 @@
             await loadMzTrigger(signal);
         }
         
-        function renderMzTrigger(data, demoMode = null) {
+        function getMzSymbolInfo(symbol) {
+            const map = {
+                'GMSTR.IS': 'GMSTR.IS (Türkiye)',
+                'XAGUSD=X': 'Silver / USD',
+                'SI=F': 'Gümüş Futures',
+                'GC=F': 'Altın Futures',
+                'SLV': 'SLV ETF',
+                'BTCUSDT': 'Bitcoin / USDT',
+                'ETHUSDT': 'Ethereum / USDT'
+            };
+            return map[symbol] || symbol;
+        }
+        
+        function renderMzTrigger(data, demoMode = null, symbol = 'GMSTR.IS') {
             const container = document.getElementById('mzTriggerContainer');
             if (!data || data.error) {
                 const msg = data?.error === 'Veri cekilemedi' 
@@ -1526,9 +1550,19 @@
             const demoBadge = demoMode ? `<span style="background: rgba(245,158,11,0.2); color: #fbbf24; padding: 4px 10px; border-radius: 12px; font-size: 11px; margin-left: 8px;">DEMO: ${demoMode}</span>` : '';
             
             let html = `
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding: 10px 14px; background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border-color);">
+                    <div>
+                        <span style="color: var(--text-secondary); font-size: 12px;">Sembol</span>
+                        <div style="font-size: 18px; font-weight: 600;">${getMzSymbolInfo(symbol)}</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <span style="color: var(--text-secondary); font-size: 12px;">Son Güncelleme</span>
+                        <div style="font-size: 13px; color: var(--text-secondary);">${data.timestamp?.split('T')[1]?.substring(0,5) || '-'}</div>
+                    </div>
+                </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
                     <div style="background: ${signalBg}; border: 1px solid ${signalColor}; border-radius: 12px; padding: 20px; text-align: center;">
-                        <div style="font-size: 14px; color: var(--text-secondary); margin-bottom: 8px;">Sinyal</div>
+                        <div style="font-size: 14px; color: var(--text-secondary); margin-bottom: 8px;">Güncel Sinyal</div>
                         <div style="font-size: 32px; font-weight: 700; color: ${signalColor};">${data.signal}${demoBadge}</div>
                     </div>
                     <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px; text-align: center;">
@@ -1572,6 +1606,13 @@
                 </div>
                 
                 <canvas id="mzChart" style="max-height: 300px;"></canvas>
+                
+                <div style="margin-top: 20px;">
+                    <div style="font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--text-primary);">📊 Son 1 Aylık Sinyal Geçmişi</div>
+                    <div id="mzSignalHistory" style="max-height: 220px; overflow-y: auto; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-card);">
+                        ${renderMzSignalHistory(data.signals_history)}
+                    </div>
+                </div>
             `;
             
             container.innerHTML = html;
@@ -1580,6 +1621,33 @@
             if (data.bars && data.bars.length > 0) {
                 renderMzChart(data.bars);
             }
+        }
+        
+        function renderMzSignalHistory(signals) {
+            if (!signals || signals.length === 0) {
+                return '<div style="text-align: center; padding: 20px; color: var(--text-secondary);">Son 1 ayda sinyal bulunamadı</div>';
+            }
+            
+            const rows = signals.slice().reverse().map(s => {
+                const color = s.signal === 'AL' ? '#10b981' : '#ef4444';
+                const icon = s.signal === 'AL' ? '▲' : '▼';
+                const date = new Date(s.timestamp);
+                const dateStr = date.toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+                return `
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border-color);">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span style="color: ${color}; font-weight: 700; font-size: 16px;">${icon} ${s.signal}</span>
+                            <span style="color: var(--text-secondary); font-size: 13px;">${dateStr}</span>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="font-weight: 600; font-size: 14px;">${s.price?.toFixed(2)}</div>
+                            <div style="font-size: 11px; color: var(--text-secondary);">ATR: ${s.atr?.toFixed(2)}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            return rows;
         }
         
         function renderMzChart(bars) {
@@ -1655,6 +1723,7 @@
         
         async function checkMzTrigger() {
             const manualPrice = document.getElementById('manualPrice')?.value;
+            const symbol = document.getElementById('mzSymbol')?.value || 'GMSTR.IS';
             if (!manualPrice) {
                 alert('Sinyal kontrolü için lütfen "Manuel fiyat" inputuna bir fiyat girin (örn. 547).');
                 return;
@@ -1664,7 +1733,7 @@
             button.textContent = 'Kontrol Ediliyor...';
             
             try {
-                const payload = { manual_price: parseFloat(manualPrice) };
+                const payload = { manual_price: parseFloat(manualPrice), symbol: symbol };
                 const response = await fetch('/api/mztrigger/check', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
