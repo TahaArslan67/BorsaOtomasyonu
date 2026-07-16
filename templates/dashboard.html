@@ -1798,7 +1798,12 @@
                 return;
             }
             
-            candleSeries.setData(ohlc);
+            try {
+                candleSeries.setData(ohlc);
+            } catch (e) {
+                console.error('setData hatasi:', e.message, 'ohlc len:', ohlc.length, 'first:', ohlc[0], 'last:', ohlc[ohlc.length-1]);
+                throw e;
+            }
             
             const jawLine = chart.addLineSeries({ color: '#3b82f6', lineWidth: 2, title: 'Jaw (13)' });
             const teethLine = chart.addLineSeries({ color: '#ef4444', lineWidth: 2, title: 'Teeth (8)' });
