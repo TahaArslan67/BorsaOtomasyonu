@@ -1743,69 +1743,85 @@
                 wickDownColor: '#ef4444',
             });
             
-            const ohlc = bars.map(b => {
-                const ts = b.timestamp;
-                let time;
+            function parseTime(ts) {
                 if (typeof ts === 'number') {
-                    // ms veya s cinsinden timestamp
-                    const sec = ts > 1e10 ? Math.floor(ts / 1000) : ts;
-                    time = { year: new Date(sec * 1000).getFullYear(), month: new Date(sec * 1000).getMonth() + 1, day: new Date(sec * 1000).getDate(), hour: new Date(sec * 1000).getHours(), minute: new Date(sec * 1000).getMinutes() };
-                } else if (ts && ts.includes && ts.includes(' ')) {
-                    const [d, t] = ts.split(' ');
-                    const [yy, mm, dd] = d.split('-');
-                    const [hh, mn] = t.split(':');
-                    time = { year: parseInt(yy), month: parseInt(mm), day: parseInt(dd), hour: parseInt(hh), minute: parseInt(mn) };
-                } else {
-                    const d = new Date(ts);
-                    time = { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours(), minute: d.getMinutes() };
+                    // ms ise saniyeye çevir
+                    return Math.floor(ts > 1e10 ? ts / 1000 : ts);
                 }
-                return {
+                if (ts && ts.includes && ts.includes(' ')) {
+                    return Math.floor(new Date(ts).getTime() / 1000);
+                }
+                return Math.floor(new Date(ts).getTime() / 1000);
+            }
+            
+            const asNum = v => typeof v === 'number' && !isNaN(v) ? v : null;
+            
+            // Veriyi zaman damgasi + ohlc haline getir, gecersizleri at
+            const mapped = [];
+            for (let i = 0; i < bars.length; i++) {
+                const b = bars[i];
+                const time = parseTime(b.timestamp);
+                const open = asNum(b.open ?? b.close);
+                const high = asNum(b.high ?? b.close);
+                const low = asNum(b.low ?? b.close);
+                const close = asNum(b.close);
+                if (!time || open === null || high === null || low === null || close === null) continue;
+                mapped.push({
+                    index: i,
                     time: time,
-                    open: b.open ?? b.close,
-                    high: b.high ?? b.close,
-                    low: b.low ?? b.close,
-                    close: b.close
-                };
-            }).sort((a, b) => {
-                const ta = new Date(a.time.year, a.time.month - 1, a.time.day, a.time.hour, a.time.minute).getTime();
-                const tb = new Date(b.time.year, b.time.month - 1, b.time.day, b.time.hour, b.time.minute).getTime();
-                return ta - tb;
-            });
+                    open: open,
+                    high: high,
+                    low: low,
+                    close: close,
+                    jaw: asNum(b.jaw),
+                    teeth: asNum(b.teeth),
+                    lips: asNum(b.lips)
+                });
+            }
+            
+            // Zaman artan siralama, ayni zamandaki tekrarlari at
+            mapped.sort((a, b) => a.time - b.time);
+            const seen = new Set();
+            const ohlc = [];
+            for (const m of mapped) {
+                if (seen.has(m.time)) continue;
+                seen.add(m.time);
+                ohlc.push({ time: m.time, open: m.open, high: m.high, low: m.low, close: m.close });
+            }
+            
             candleSeries.setData(ohlc);
             
             const jawLine = chart.addLineSeries({ color: '#3b82f6', lineWidth: 2, title: 'Jaw (13)' });
             const teethLine = chart.addLineSeries({ color: '#ef4444', lineWidth: 2, title: 'Teeth (8)' });
             const lipsLine = chart.addLineSeries({ color: '#10b981', lineWidth: 2, title: 'Lips (5)' });
             
-            jawLine.setData(ohlc.map((b, i) => ({ time: b.time, value: bars[i].jaw })).filter(x => x.value != null));
-            teethLine.setData(ohlc.map((b, i) => ({ time: b.time, value: bars[i].teeth })).filter(x => x.value != null));
-            lipsLine.setData(ohlc.map((b, i) => ({ time: b.time, value: bars[i].lips })).filter(x => x.value != null));
+            const jawData = []; const teethData = []; const lipsData = [];
+            for (const m of mapped) {
+                if (m.jaw !== null) jawData.push({ time: m.time, value: m.jaw });
+                if (m.teeth !== null) teethData.push({ time: m.time, value: m.teeth });
+                if (m.lips !== null) lipsData.push({ time: m.time, value: m.lips });
+            }
+            jawLine.setData(jawData);
+            teethLine.setData(teethData);
+            lipsLine.setData(lipsData);
             
             // Sinyal oklari (markers)
             const markers = [];
-            if (signalsHistory && signalsHistory.length > 0) {
-                const visibleSignals = signalsHistory.filter(s => {
-                    const st = new Date(s.timestamp).getTime();
-                    const firstTime = ohlc.length > 0 ? new Date(ohlc[0].time.year, ohlc[0].time.month - 1, ohlc[0].time.day, ohlc[0].time.hour, ohlc[0].time.minute).getTime() : 0;
-                    const lastTime = ohlc.length > 0 ? new Date(ohlc[ohlc.length - 1].time.year, ohlc[ohlc.length - 1].time.month - 1, ohlc[ohlc.length - 1].time.day, ohlc[ohlc.length - 1].time.hour, ohlc[ohlc.length - 1].time.minute).getTime() : Infinity;
-                    return st >= firstTime && st <= lastTime;
-                });
-                
-                visibleSignals.forEach(s => {
-                    const d = new Date(s.timestamp);
-                    const time = { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour: d.getHours(), minute: d.getMinutes() };
-                    const bar = ohlc.find(b => b.time.year === time.year && b.time.month === time.month && b.time.day === time.day && b.time.hour === time.hour && b.time.minute === time.minute);
-                    if (bar) {
-                        markers.push({
-                            time: time,
-                            position: s.signal === 'AL' ? 'belowBar' : 'aboveBar',
-                            color: s.signal === 'AL' ? '#10b981' : '#ef4444',
-                            shape: s.signal === 'AL' ? 'arrowUp' : 'arrowDown',
-                            text: s.signal,
-                            size: 2
-                        });
-                    }
-                });
+            if (signalsHistory && signalsHistory.length > 0 && ohlc.length > 0) {
+                const firstTime = ohlc[0].time;
+                const lastTime = ohlc[ohlc.length - 1].time;
+                for (const s of signalsHistory) {
+                    const st = parseTime(s.timestamp);
+                    if (!st || st < firstTime || st > lastTime) continue;
+                    markers.push({
+                        time: st,
+                        position: s.signal === 'AL' ? 'belowBar' : 'aboveBar',
+                        color: s.signal === 'AL' ? '#10b981' : '#ef4444',
+                        shape: s.signal === 'AL' ? 'arrowUp' : 'arrowDown',
+                        text: s.signal,
+                        size: 2
+                    });
+                }
             }
             
             if (markers.length > 0) {
